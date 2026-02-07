@@ -41,9 +41,11 @@ def parse_args():
         help="How often (in seconds) to print shake stats to the console.",
     )
     parser.add_argument(
-        "--delta-t", dest="delta_t", type=int, default=5000,
+        "--delta-t", dest="delta_t", type=int, default=1000,
         help="Duration of each event slice in microseconds. "
-             "Determines the sampling rate for centroid tracking (1/delta_t Hz).",
+             "Determines the sampling rate for centroid tracking (1e6/delta_t Hz). "
+             "Max detectable frequency = sampling_rate / 2 (Nyquist). "
+             "Default 1000 us -> 1000 Hz sampling -> 500 Hz max frequency.",
     )
     return parser.parse_args()
 
