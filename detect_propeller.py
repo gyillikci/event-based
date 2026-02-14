@@ -2,17 +2,18 @@
 Drone propeller rotation detector for event-based cameras.
 
 Detects spinning propellers in the field of view and estimates their
-rotational frequency (Hz) and RPM in real-time using two approaches:
+rotational frequency (Hz) and RPM in real-time.
 
+Detection pipeline:
   1. Per-pixel frequency map  (FrequencyMapAsyncAlgorithm from Metavision SDK)
-     - Shows a heatmap of which pixels are oscillating and at what frequency.
-     - Great for localizing propellers spatially.
-
-  2. ROI-based event-rate FFT
-     - Counts events per time slice in a grid of cells.
-     - Applies FFT to each cell's event-rate time series.
-     - Detects dominant periodic signal per cell -> frequency & RPM.
-     - Clusters nearby active cells to report per-propeller stats.
+     - Each pixel independently detects periodic brightness changes.
+  2. Connected-component spatial clustering
+     - Groups adjacent vibrating pixels with similar frequencies.
+     - Even a few pixels (3+) at a consistent frequency = candidate propeller.
+  3. Temporal tracking
+     - Propeller candidates must persist across multiple frames to be confirmed.
+     - Smooths position and frequency estimates over time.
+     - Eliminates transient noise spikes.
 
 Typical drone propeller frequencies:
     Heavy-lift   :  67 - 167 Hz  (4,000 - 10,000 RPM)
@@ -27,8 +28,8 @@ Usage:
 """
 
 import argparse
+import time
 import numpy as np
-from collections import deque
 
 from metavision_core.event_io import EventsIterator, LiveReplayEventsIterator, is_live_camera
 from metavision_sdk_analytics import FrequencyMapAsyncAlgorithm, DominantValueMapAlgorithm, \
@@ -51,50 +52,69 @@ def parse_args():
 
     # Frequency range
     parser.add_argument(
-        "--min-freq", dest="min_freq", type=float, default=50,
+        "--min-freq", dest="min_freq", type=float, default=10,
         help="Minimum propeller frequency to detect (Hz).",
     )
     parser.add_argument(
-        "--max-freq", dest="max_freq", type=float, default=500,
+        "--max-freq", dest="max_freq", type=float, default=300,
         help="Maximum propeller frequency to detect (Hz). "
              "Set higher for racing drones (e.g. 1000).",
     )
     parser.add_argument(
-        "--num-blades", dest="num_blades", type=int, default=2,
+        "--num-blades", dest="num_blades", type=int, default=3,
         help="Number of propeller blades. RPM = (detected_freq / num_blades) * 60.",
     )
 
     # SDK frequency algorithm tuning
     parser.add_argument(
-        "--filter-length", dest="filter_length", type=int, default=7,
-        help="Number of successive periods needed to confirm a vibration.",
+        "--filter-length", dest="filter_length", type=int, default=4,
+        help="Number of successive periods to confirm a vibration. "
+             "Lower = more sensitive to weak/distant signals.",
     )
     parser.add_argument(
-        "--max-period-diff", dest="max_period_diff", type=int, default=500,
+        "--max-period-diff", dest="max_period_diff", type=int, default=1500,
         help="Max difference between two periods to be considered the same (us). "
-             "Lower = stricter periodicity requirement.",
+             "Higher = more tolerant of noisy/distant signals.",
     )
     parser.add_argument(
         "--freq-precision", dest="freq_precision", type=float, default=5.0,
         help="Width of frequency bins in Hz for histogram display.",
     )
+
+    # Spatial clustering
     parser.add_argument(
-        "--min-pixel-count", dest="min_pixel_count", type=int, default=25,
-        help="Minimum vibrating pixels to consider a frequency real (not noise).",
+        "--min-cluster-pixels", dest="min_cluster_pixels", type=int, default=2,
+        help="Minimum vibrating pixels in a connected cluster to be a candidate. "
+             "Set to 1 only for extreme range (very noisy — pair with higher min-hits).",
+    )
+    parser.add_argument(
+        "--dilate-radius", dest="dilate_radius", type=int, default=5,
+        help="Morphological dilation radius to connect nearby vibrating pixels. "
+             "Larger = bridges bigger gaps (good for sparse distant signals).",
+    )
+    parser.add_argument(
+        "--max-freq-cv", dest="max_freq_cv", type=float, default=0.3,
+        help="Max coefficient of variation of frequencies within a cluster. "
+             "Lower = stricter frequency consistency required.",
     )
 
-    # FFT grid analysis
+    # Temporal tracking
     parser.add_argument(
-        "--grid-cells", dest="grid_cells", type=int, default=16,
-        help="Number of grid cells per axis for ROI-based FFT analysis.",
+        "--min-hits", dest="min_hits", type=int, default=5,
+        help="Minimum consecutive detections before a propeller is confirmed. "
+             "Higher = fewer false positives but slower response.",
     )
     parser.add_argument(
-        "--fft-window", dest="fft_window_sec", type=float, default=0.5,
-        help="Rolling FFT window duration in seconds.",
+        "--max-age", dest="max_age", type=int, default=8,
+        help="Frames without detection before a track is dropped.",
     )
     parser.add_argument(
-        "--min-snr", dest="min_snr", type=float, default=3.0,
-        help="Minimum signal-to-noise ratio for a cell's FFT peak to be reported.",
+        "--track-distance", dest="track_distance", type=float, default=100,
+        help="Max pixel distance to match a new detection to an existing track.",
+    )
+    parser.add_argument(
+        "--freq-tolerance", dest="freq_tolerance", type=float, default=0.3,
+        help="Max relative frequency difference to match detection to track.",
     )
 
     # Timing
@@ -104,12 +124,9 @@ def parse_args():
              "Default 500 us -> 2000 Hz sampling -> 1000 Hz Nyquist limit.",
     )
     parser.add_argument(
-        "--update-freq", dest="update_freq", type=float, default=25,
-        help="How often (Hz) the frequency heatmap updates.",
-    )
-    parser.add_argument(
-        "--print-interval", dest="print_interval_sec", type=float, default=0.5,
-        help="How often (seconds) to print detected propeller stats.",
+        "--update-freq", dest="update_freq", type=float, default=10,
+        help="How often (Hz) the frequency heatmap and detections update. "
+             "Lower = less CPU load = less latency.",
     )
 
     # Replay
@@ -131,174 +148,307 @@ def parse_args():
     return args
 
 
-class PropellerGridAnalyzer:
-    """Divides the sensor into a grid and runs FFT on event rates per cell.
+# ---------------------------------------------------------------------------
+#  Spatial clustering: connected components on the per-pixel frequency map
+# ---------------------------------------------------------------------------
 
-    Each cell accumulates event counts per time slice. FFT on this time series
-    reveals periodic activity at propeller blade-pass frequencies.
+class FrequencyMapAnalyzer:
+    """Finds propeller candidate regions in the SDK's per-pixel frequency map.
+
+    Pipeline:
+      1. Threshold the frequency map to get a binary mask of vibrating pixels.
+      2. Dilate the mask to bridge small gaps (propeller pixels may be sparse).
+      3. Connected-component labelling to find spatial clusters.
+      4. For each cluster: check size, frequency consistency, compute stats.
     """
 
-    def __init__(self, width, height, grid_cells, fft_window_samples,
-                 min_freq, max_freq, num_blades, min_snr):
-        self.width = width
-        self.height = height
-        self.grid_cells = grid_cells
-        self.cell_w = width / grid_cells
-        self.cell_h = height / grid_cells
-        self.num_blades = num_blades
+    # Downscale factor for the binary mask before morphology + CC analysis.
+    # 4x downscale: 1280x720 -> 320x180  (~16x fewer pixels to process).
+    DOWNSCALE = 4
+
+    def __init__(self, min_freq, max_freq, num_blades,
+                 min_pixels=3, dilate_radius=5, max_freq_cv=0.3):
         self.min_freq = min_freq
         self.max_freq = max_freq
-        self.min_snr = min_snr
+        self.num_blades = num_blades
+        self.min_pixels = min_pixels
+        self.max_freq_cv = max_freq_cv
+        # Structuring element for dilation (adjusted for downscaled image)
+        ds_radius = max(1, dilate_radius // self.DOWNSCALE)
+        k = 2 * ds_radius + 1
+        self.kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
 
-        # Per-cell event count buffers (rolling window)
-        n_cells = grid_cells * grid_cells
-        self.buffers = [deque(maxlen=fft_window_samples) for _ in range(n_cells)]
-
-    def _cell_index(self, row, col):
-        return row * self.grid_cells + col
-
-    def accumulate(self, events):
-        """Count events falling into each grid cell for this time slice."""
-        if events.size == 0:
-            # Push zero counts so the buffer advances in time
-            for buf in self.buffers:
-                buf.append(0)
-            return
-
-        cols = np.clip((events["x"] / self.cell_w).astype(int), 0, self.grid_cells - 1)
-        rows = np.clip((events["y"] / self.cell_h).astype(int), 0, self.grid_cells - 1)
-        indices = rows * self.grid_cells + cols
-
-        counts = np.bincount(indices, minlength=self.grid_cells * self.grid_cells)
-        for i, buf in enumerate(self.buffers):
-            buf.append(int(counts[i]))
-
-    def analyze(self, fs):
-        """Run FFT on each cell and return detected propeller regions.
+    def analyze(self, freq_map):
+        """Extract propeller candidate regions from the frequency map.
 
         Args:
-            fs: Sampling rate in Hz.
+            freq_map: 2D float array where each pixel = detected frequency (Hz),
+                      0 means no vibration detected.
 
         Returns:
-            List of dicts with keys: row, col, freq_hz, rpm, snr
+            List of dicts with keys:
+              x, y      - centroid
+              freq_hz   - median frequency
+              rpm       - estimated RPM
+              pixels    - number of active pixels
+              bbox      - (x, y, w, h)
+              freq_cv   - coefficient of variation of frequency within cluster
         """
+        DS = self.DOWNSCALE
+        h_full, w_full = freq_map.shape
+
+        # Step 1: binary mask of pixels vibrating in our target range
+        valid = (freq_map >= self.min_freq) & (freq_map <= self.max_freq)
+
+        # Early exit: count active pixels cheaply
+        active_count = int(np.count_nonzero(valid))
+        if active_count < self.min_pixels:
+            return []
+
+        # Step 2: downscale mask for fast morphology + connected components
+        mask_full = valid.astype(np.uint8) * 255
+        h_ds, w_ds = h_full // DS, w_full // DS
+        mask_small = cv2.resize(mask_full, (w_ds, h_ds),
+                                interpolation=cv2.INTER_NEAREST)
+
+        # Step 3: dilate to bridge nearby pixels (on small image = very fast)
+        mask_dilated = cv2.dilate(mask_small, self.kernel, iterations=1)
+
+        # Step 4: connected components on the small image
+        num_labels, labels_small, stats, centroids = \
+            cv2.connectedComponentsWithStats(mask_dilated, connectivity=8)
+
         detections = []
-        for r in range(self.grid_cells):
-            for c in range(self.grid_cells):
-                idx = self._cell_index(r, c)
-                buf = self.buffers[idx]
-                n = len(buf)
-                if n < 16:
-                    continue
+        for i in range(1, num_labels):  # skip label 0 = background
+            area_dilated = stats[i, cv2.CC_STAT_AREA]
+            # Minimum area check (scaled for downsampled image)
+            if area_dilated < max(1, self.min_pixels // (DS * DS)):
+                continue
 
-                signal = np.array(buf, dtype=np.float64)
-                # Skip cells with almost no events
-                if np.mean(signal) < 1.0:
-                    continue
+            # Map bounding box back to full resolution
+            x_ds = int(stats[i, cv2.CC_STAT_LEFT])
+            y_ds = int(stats[i, cv2.CC_STAT_TOP])
+            w_box = int(stats[i, cv2.CC_STAT_WIDTH]) * DS
+            h_box = int(stats[i, cv2.CC_STAT_HEIGHT]) * DS
+            x_full = x_ds * DS
+            y_full = y_ds * DS
 
-                sig = signal - np.mean(signal)
-                window = np.hanning(n)
-                sig_windowed = sig * window
+            # Clamp to image bounds
+            x2 = min(x_full + w_box, w_full)
+            y2 = min(y_full + h_box, h_full)
 
-                spectrum = np.fft.rfft(sig_windowed)
-                freqs = np.fft.rfftfreq(n, d=1.0 / fs)
-                magnitudes = np.abs(spectrum) * 2.0 / n
+            # Get actual vibrating pixels from the full-res valid mask (ROI only)
+            roi_valid = valid[y_full:y2, x_full:x2]
+            actual_pixels = int(np.count_nonzero(roi_valid))
+            if actual_pixels < self.min_pixels:
+                continue
 
-                # Only consider target frequency range
-                valid = (freqs >= self.min_freq) & (freqs <= self.max_freq)
-                if not np.any(valid):
-                    continue
+            # Step 5: frequency statistics (on full-res ROI)
+            roi_freqs = freq_map[y_full:y2, x_full:x2]
+            cluster_freqs = roi_freqs[roi_valid]
+            if len(cluster_freqs) == 0:
+                continue
 
-                valid_mags = magnitudes[valid]
-                valid_freqs = freqs[valid]
+            median_freq = float(np.median(cluster_freqs))
+            if median_freq <= 0:
+                continue
 
-                peak_idx = np.argmax(valid_mags)
-                peak_mag = valid_mags[peak_idx]
-                peak_freq = valid_freqs[peak_idx]
+            # Coefficient of variation: std / mean (0 = perfect consistency)
+            if len(cluster_freqs) > 1:
+                freq_cv = float(np.std(cluster_freqs) / median_freq)
+            else:
+                freq_cv = 0.0
 
-                # SNR: peak magnitude vs median of the rest
-                noise_floor = np.median(valid_mags)
-                if noise_floor > 0:
-                    snr = peak_mag / noise_floor
-                else:
-                    snr = peak_mag  # if no noise, any signal is good
+            if freq_cv > self.max_freq_cv:
+                continue
 
-                if snr >= self.min_snr:
-                    rpm = (peak_freq / self.num_blades) * 60
-                    detections.append({
-                        "row": r, "col": c,
-                        "freq_hz": float(peak_freq),
-                        "rpm": float(rpm),
-                        "snr": float(snr),
-                        "magnitude": float(peak_mag),
-                    })
+            rpm = (median_freq / self.num_blades) * 60
+            # Centroid in full-res coordinates
+            cx = float(centroids[i][0]) * DS
+            cy = float(centroids[i][1]) * DS
+
+            detections.append({
+                "x": cx,
+                "y": cy,
+                "freq_hz": median_freq,
+                "rpm": rpm,
+                "pixels": actual_pixels,
+                "bbox": (x_full, y_full, x2 - x_full, y2 - y_full),
+                "freq_cv": freq_cv,
+            })
+
+        # Sort by pixel count (largest = most confident)
+        detections.sort(key=lambda d: d["pixels"], reverse=True)
         return detections
 
 
-def cluster_detections(detections, grid_cells):
-    """Group adjacent grid cells with similar frequencies into propeller clusters.
+# ---------------------------------------------------------------------------
+#  Temporal tracking: only report propellers that persist across frames
+# ---------------------------------------------------------------------------
 
-    Returns list of dicts: center_row, center_col, freq_hz, rpm, n_cells, avg_snr
+class PropellerTracker:
+    """Tracks propeller detections across frames for temporal consistency.
+
+    A detection must be seen in at least `min_hits` out of the last
+    `max_age` frames to be confirmed as a real propeller. This eliminates
+    transient noise spikes.
     """
-    if not detections:
-        return []
 
-    # Simple connected-component clustering on grid adjacency + frequency similarity
-    used = [False] * len(detections)
-    clusters = []
+    def __init__(self, max_distance=100, freq_tolerance=0.3,
+                 min_hits=3, max_age=8):
+        self.max_distance = max_distance
+        self.freq_tolerance = freq_tolerance
+        self.min_hits = min_hits
+        self.max_age = max_age
+        self.tracks = []
+        self.next_id = 1
 
-    for i, det in enumerate(detections):
-        if used[i]:
-            continue
-        # Start a new cluster
-        cluster = [det]
-        used[i] = True
-        queue = [i]
+    def update(self, detections):
+        """Match new detections to existing tracks, create/remove tracks.
 
-        while queue:
-            ci = queue.pop(0)
-            cd = detections[ci]
-            for j, other in enumerate(detections):
-                if used[j]:
+        Args:
+            detections: List of dicts from FrequencyMapAnalyzer.analyze()
+
+        Returns:
+            List of confirmed track dicts (hits >= min_hits), sorted by pixel count.
+        """
+        matched_tracks = set()
+        matched_dets = set()
+
+        # Greedy matching: for each detection, find the best matching track
+        for di, det in enumerate(detections):
+            best_track_idx = None
+            best_dist = self.max_distance
+
+            for ti, track in enumerate(self.tracks):
+                if ti in matched_tracks:
                     continue
-                # Adjacent in grid?
-                dr = abs(cd["row"] - other["row"])
-                dc = abs(cd["col"] - other["col"])
-                if dr <= 1 and dc <= 1:
-                    # Similar frequency? (within 20%)
-                    freq_ratio = max(cd["freq_hz"], other["freq_hz"]) / max(min(cd["freq_hz"], other["freq_hz"]), 1e-6)
-                    if freq_ratio <= 1.2:
-                        cluster.append(other)
-                        used[j] = True
-                        queue.append(j)
 
-        # Summarize cluster
-        freqs = [d["freq_hz"] for d in cluster]
-        rpms = [d["rpm"] for d in cluster]
-        snrs = [d["snr"] for d in cluster]
-        rows = [d["row"] for d in cluster]
-        cols = [d["col"] for d in cluster]
-        clusters.append({
-            "center_row": float(np.mean(rows)),
-            "center_col": float(np.mean(cols)),
-            "freq_hz": float(np.median(freqs)),
-            "rpm": float(np.median(rpms)),
-            "n_cells": len(cluster),
-            "avg_snr": float(np.mean(snrs)),
-        })
+                # Spatial distance
+                dist = np.sqrt((det["x"] - track["x"])**2 +
+                               (det["y"] - track["y"])**2)
+                if dist > self.max_distance:
+                    continue
 
-    # Sort by number of cells (largest cluster = most confident)
-    clusters.sort(key=lambda c: c["n_cells"], reverse=True)
-    return clusters
+                # Frequency similarity
+                f1, f2 = det["freq_hz"], track["freq_hz"]
+                freq_ratio = max(f1, f2) / max(min(f1, f2), 1e-6)
+                if freq_ratio > 1.0 + self.freq_tolerance:
+                    continue
 
+                if dist < best_dist:
+                    best_dist = dist
+                    best_track_idx = ti
+
+            if best_track_idx is not None:
+                # Update existing track with exponential smoothing
+                track = self.tracks[best_track_idx]
+                alpha = 0.3
+                track["x"] = alpha * det["x"] + (1 - alpha) * track["x"]
+                track["y"] = alpha * det["y"] + (1 - alpha) * track["y"]
+                track["freq_hz"] = alpha * det["freq_hz"] + (1 - alpha) * track["freq_hz"]
+                track["rpm"] = alpha * det["rpm"] + (1 - alpha) * track["rpm"]
+                track["pixels"] = det["pixels"]
+                track["bbox"] = det["bbox"]
+                track["freq_cv"] = det["freq_cv"]
+                track["hits"] += 1
+                track["age"] = 0
+                matched_tracks.add(best_track_idx)
+                matched_dets.add(di)
+
+        # Create new tracks for unmatched detections
+        for di, det in enumerate(detections):
+            if di in matched_dets:
+                continue
+            self.tracks.append({
+                "id": self.next_id,
+                "x": det["x"],
+                "y": det["y"],
+                "freq_hz": det["freq_hz"],
+                "rpm": det["rpm"],
+                "pixels": det["pixels"],
+                "bbox": det["bbox"],
+                "freq_cv": det["freq_cv"],
+                "hits": 1,
+                "age": 0,
+            })
+            self.next_id += 1
+
+        # Age unmatched tracks and prune dead ones
+        for ti, track in enumerate(self.tracks):
+            if ti not in matched_tracks:
+                track["age"] += 1
+
+        self.tracks = [t for t in self.tracks if t["age"] <= self.max_age]
+
+        # Return only confirmed tracks
+        confirmed = [t for t in self.tracks if t["hits"] >= self.min_hits]
+        confirmed.sort(key=lambda t: t["pixels"], reverse=True)
+        return confirmed
+
+
+# ---------------------------------------------------------------------------
+#  Visualization helpers
+# ---------------------------------------------------------------------------
+
+def draw_detections_on_frame(frame, confirmed_tracks, num_blades):
+    """Draw bounding boxes and labels for confirmed propellers directly on frame.
+
+    Draws in-place to avoid an expensive full-frame copy (~2.7 MB at 1280x720).
+    The frame is overwritten by PeriodicFrameGenerationAlgorithm on the next
+    callback anyway, so in-place modification is safe.
+    """
+    for track in confirmed_tracks:
+        x, y, w, h = track["bbox"]
+        margin = max(10, int(max(w, h) * 0.3))
+        x1 = max(0, x - margin)
+        y1 = max(0, y - margin)
+        x2 = min(frame.shape[1], x + w + margin)
+        y2 = min(frame.shape[0], y + h + margin)
+
+        # Color: green, brighter for more hits (cap at 10 to avoid overflow)
+        brightness = min(255, 100 + min(track["hits"], 10) * 15)
+        color = (0, brightness, 0)
+        thickness = 2
+
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
+
+        freq = track["freq_hz"]
+        rpm = track["rpm"]
+        px = track["pixels"]
+        label1 = f"ID{track['id']}: {freq:.0f}Hz {rpm:.0f}RPM"
+        label2 = f"{px}px hits={track['hits']}"
+
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.5
+        text_thick = 1
+        (tw1, th1), _ = cv2.getTextSize(label1, font, font_scale, text_thick)
+        (tw2, th2), _ = cv2.getTextSize(label2, font, font_scale, text_thick)
+        tw = max(tw1, tw2)
+
+        ty = y1 - 5
+        if ty - th1 - th2 - 8 < 0:
+            ty = y2 + th1 + 5
+
+        cv2.rectangle(frame, (x1, ty - th1 - th2 - 8),
+                      (x1 + tw + 6, ty + 4), (0, 0, 0), -1)
+        cv2.putText(frame, label1, (x1 + 3, ty - th2 - 4),
+                    font, font_scale, color, text_thick, cv2.LINE_AA)
+        cv2.putText(frame, label2, (x1 + 3, ty),
+                    font, font_scale, color, text_thick, cv2.LINE_AA)
+
+        cx, cy_pt = int(track["x"]), int(track["y"])
+        cv2.drawMarker(frame, (cx, cy_pt), color,
+                       cv2.MARKER_CROSS, 12, thickness)
+
+
+# ---------------------------------------------------------------------------
+#  Main
+# ---------------------------------------------------------------------------
 
 def main():
     args = parse_args()
-
     delta_t = args.delta_t
-    fs = 1e6 / delta_t  # sampling rate in Hz
-    fft_window_samples = int(args.fft_window_sec * fs)
-    print_interval_samples = max(1, int(args.print_interval_sec * fs))
 
     # Events iterator
     mv_iterator = EventsIterator(input_path=args.event_file_path, delta_t=delta_t)
@@ -317,9 +467,9 @@ def main():
     )
     freq_algo.update_frequency = args.update_freq
 
-    # Dominant value extractor
+    # Dominant value extractor (for the heatmap legend)
     dominant_algo = DominantValueMapAlgorithm(
-        args.min_freq, args.max_freq, args.freq_precision, args.min_pixel_count)
+        args.min_freq, args.max_freq, args.freq_precision, args.min_cluster_pixels)
 
     # Heatmap frame generator
     heat_gen = HeatMapFrameGeneratorAlgorithm(
@@ -327,23 +477,28 @@ def main():
     freq_img = heat_gen.get_output_image()
     freq_full_height = heat_gen.full_height
 
-    # --- Grid-based FFT analyzer ---
-    grid_analyzer = PropellerGridAnalyzer(
-        width, height,
-        grid_cells=args.grid_cells,
-        fft_window_samples=fft_window_samples,
+    # --- Spatial analyzer + Temporal tracker ---
+    analyzer = FrequencyMapAnalyzer(
         min_freq=args.min_freq,
         max_freq=args.max_freq,
         num_blades=args.num_blades,
-        min_snr=args.min_snr,
+        min_pixels=args.min_cluster_pixels,
+        dilate_radius=args.dilate_radius,
+        max_freq_cv=args.max_freq_cv,
+    )
+    tracker = PropellerTracker(
+        max_distance=args.track_distance,
+        freq_tolerance=args.freq_tolerance,
+        min_hits=args.min_hits,
+        max_age=args.max_age,
     )
 
     # --- Windows ---
-    # Event viewer
-    ev_window = MTWindow(title="Events - Propeller Detector", width=width, height=height,
+    ev_window = MTWindow(title="Propeller Detector - Events + Detections",
+                         width=width, height=height,
                          mode=BaseWindow.RenderMode.BGR, open_directly=True)
-    # Frequency heatmap
-    freq_window = MTWindow(title="Frequency Map", width=width, height=freq_full_height,
+    freq_window = MTWindow(title="Frequency Map",
+                           width=width, height=freq_full_height,
                            mode=BaseWindow.RenderMode.BGR, open_directly=True)
 
     def keyboard_cb(key, scancode, action, mods):
@@ -354,25 +509,53 @@ def main():
     ev_window.set_keyboard_callback(keyboard_cb)
     freq_window.set_keyboard_callback(keyboard_cb)
 
-    # Event frame generator
+    # Event frame generator — we intercept the frame to draw detections on it
     event_frame_gen = PeriodicFrameGenerationAlgorithm(
         sensor_width=width, sensor_height=height, fps=25, palette=ColorPalette.Dark)
 
+    # Shared state between callbacks
+    confirmed_propellers = []      # latest confirmed tracks
+    last_print_ts = [0]            # timestamp of last console printout
+    prev_confirmed_ids = [set()]   # for detecting changes
+
     def on_cd_frame_cb(ts, cd_frame):
+        """Called ~25 fps: overlay detection bounding boxes on the event frame."""
+        if confirmed_propellers:
+            draw_detections_on_frame(cd_frame, confirmed_propellers,
+                                    args.num_blades)
         ev_window.show_async(cd_frame)
 
     event_frame_gen.set_output_callback(on_cd_frame_cb)
 
-    # Frequency map callback
-    latest_freq_map = [None]  # mutable container for closure
-
     def on_freq_map(ts, freq_map):
-        latest_freq_map[0] = freq_map.copy()
+        """Called at update_freq Hz: analyze freq map, track, visualize."""
+        nonlocal confirmed_propellers
 
-        # Generate and display heatmap
+        # --- Spatial clustering on the frequency map ---
+        candidates = analyzer.analyze(freq_map)
+
+        # --- Temporal tracking ---
+        confirmed_propellers = tracker.update(candidates)
+
+        # --- Generate heatmap + overlay detections ---
         heat_gen.generate_bgr_heat_map(freq_map, freq_img)
 
-        # Overlay dominant frequency text
+        # Draw detection boxes on the heatmap too
+        if confirmed_propellers:
+            for track in confirmed_propellers:
+                x, y, w, h = track["bbox"]
+                margin = max(8, int(max(w, h) * 0.2))
+                x1 = max(0, x - margin)
+                y1 = max(0, y - margin)
+                x2 = min(width, x + w + margin)
+                y2 = min(height, y + h + margin)
+                cv2.rectangle(freq_img, (x1, y1), (x2, y2), (255, 255, 255), 2)
+                label = f"{track['freq_hz']:.0f}Hz {track['rpm']:.0f}RPM"
+                cv2.putText(freq_img, label, (x1, max(y1 - 5, 12)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                            (255, 255, 255), 1, cv2.LINE_AA)
+
+        # Dominant frequency overlay
         success, dominant_freq = dominant_algo.compute_dominant_value(freq_map)
         if success:
             rpm = (dominant_freq / args.num_blades) * 60
@@ -380,26 +563,55 @@ def main():
             cv2.putText(freq_img, text, (10, height - 10),
                         cv2.FONT_HERSHEY_PLAIN, 1.0, (255, 255, 255), 1)
 
+        # Status line
+        n_candidates = len(candidates)
+        n_confirmed = len(confirmed_propellers)
+        n_tracks = len(tracker.tracks)
+        status = f"Candidates: {n_candidates}  Tracks: {n_tracks}  Confirmed: {n_confirmed}"
+        cv2.putText(freq_img, status, (10, 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
+
         freq_window.show_async(freq_img)
+
+        # --- Console output: only on changes or periodically ---
+        ts_sec = ts / 1e6
+        current_ids = set(t["id"] for t in confirmed_propellers)
+        changed = (current_ids != prev_confirmed_ids[0])
+        periodic = (ts_sec - last_print_ts[0] >= 2.0)  # every 2s max
+
+        if changed or (periodic and confirmed_propellers):
+            prev_confirmed_ids[0] = current_ids
+            last_print_ts[0] = ts_sec
+
+            if confirmed_propellers:
+                print(f"[{ts_sec:7.2f}s] === {n_confirmed} CONFIRMED PROPELLER(S) ===  "
+                      f"({n_candidates} candidates, {n_tracks} tracks)")
+                for track in confirmed_propellers:
+                    print(f"    >> ID{track['id']:3d}: "
+                          f"freq={track['freq_hz']:6.1f} Hz, "
+                          f"RPM={track['rpm']:7.0f}, "
+                          f"pixels={track['pixels']:4d}, "
+                          f"hits={track['hits']:3d}, "
+                          f"pos=({track['x']:.0f},{track['y']:.0f})")
 
     freq_algo.set_output_callback(on_freq_map)
 
     # Print header
-    nyquist = fs / 2
+    nyquist = 1e6 / delta_t / 2
     print("=" * 75)
-    print("  Drone Propeller Rotation Detector")
-    print(f"  Sensor         : {width}x{height}")
-    print(f"  Sampling rate  : {fs:.0f} Hz  (delta_t={delta_t} us)")
-    print(f"  Nyquist limit  : {nyquist:.0f} Hz")
-    print(f"  Frequency range: {args.min_freq} - {args.max_freq} Hz")
-    print(f"  Blades assumed : {args.num_blades}")
-    print(f"  FFT grid       : {args.grid_cells}x{args.grid_cells} cells")
-    print(f"  FFT window     : {args.fft_window_sec}s ({fft_window_samples} samples)")
-    print(f"  Min SNR        : {args.min_snr}")
+    print("  Drone Propeller Rotation Detector  (v2 - spatial + temporal)")
+    print(f"  Sensor          : {width}x{height}")
+    print(f"  Frequency range : {args.min_freq} - {args.max_freq} Hz")
+    print(f"  Blades assumed  : {args.num_blades}")
+    print(f"  Min cluster px  : {args.min_cluster_pixels}")
+    print(f"  Dilate radius   : {args.dilate_radius}")
+    print(f"  Max freq CV     : {args.max_freq_cv}")
+    print(f"  Tracking: min_hits={args.min_hits}, max_age={args.max_age}, "
+          f"dist={args.track_distance}, freq_tol={args.freq_tolerance}")
+    print(f"  Update rate     : {args.update_freq} Hz")
+    print(f"  delta_t         : {delta_t} us  (Nyquist={nyquist:.0f} Hz)")
     print("=" * 75)
     print()
-
-    sample_count = 0
 
     for evs in mv_iterator:
         EventLoop.poll_and_dispatch()
@@ -408,28 +620,6 @@ def main():
 
         if ev_window.should_close() or freq_window.should_close():
             break
-
-        # Feed events into grid analyzer
-        grid_analyzer.accumulate(evs)
-        sample_count += 1
-
-        # Periodic printout from grid FFT
-        if sample_count % print_interval_samples == 0:
-            detections = grid_analyzer.analyze(fs)
-            clusters = cluster_detections(detections, args.grid_cells)
-
-            if clusters:
-                print(f"[{sample_count * delta_t / 1e6:7.2f}s] "
-                      f"Detected {len(clusters)} propeller region(s):")
-                for i, cl in enumerate(clusters):
-                    print(f"    Propeller {i+1}: "
-                          f"freq={cl['freq_hz']:6.1f} Hz, "
-                          f"RPM={cl['rpm']:7.0f}, "
-                          f"cells={cl['n_cells']}, "
-                          f"SNR={cl['avg_snr']:.1f}")
-            else:
-                print(f"[{sample_count * delta_t / 1e6:7.2f}s] "
-                      f"No propeller detected")
 
     ev_window.destroy()
     freq_window.destroy()
