@@ -35,6 +35,8 @@ from metavision_sdk_core import PeriodicFrameGenerationAlgorithm, ColorPalette
 from metavision_sdk_ui import EventLoop, BaseWindow, MTWindow, UIAction, UIKeyEvent
 import cv2
 
+from propeller_utils import PropellerGridAnalyzer, cluster_detections
+
 
 # ---------------------------------------------------------------------------
 # Frequency cross-validation
@@ -71,12 +73,13 @@ class BayesianDroneDetector:
     """
 
     def __init__(self, prior=0.001, decay_rate=0.995,
-                 min_freq=50, max_freq=500):
+                 min_freq=50, max_freq=500, detection_threshold=0.8):
         self.p_drone = prior
         self.base_prior = prior
         self.decay_rate = decay_rate
         self.min_freq = min_freq
         self.max_freq = max_freq
+        self.detection_threshold = detection_threshold
 
     def _freq_in_range(self, freq_hz):
         return self.min_freq <= freq_hz <= self.max_freq
@@ -148,7 +151,7 @@ class BayesianDroneDetector:
 
     @property
     def detected(self):
-        return self.p_drone > 0.8
+        return self.p_drone > self.detection_threshold
 
     @property
     def confidence(self):
@@ -341,119 +344,6 @@ class AcousticProcessor:
 
 
 # ---------------------------------------------------------------------------
-# Grid-based visual FFT analyzer (shared with detect_propeller.py)
-# ---------------------------------------------------------------------------
-
-class PropellerGridAnalyzer:
-    """Divides sensor into grid cells, runs FFT on event counts per cell."""
-
-    def __init__(self, width, height, grid_cells, fft_window_samples,
-                 min_freq, max_freq, num_blades, min_snr):
-        self.width = width
-        self.height = height
-        self.grid_cells = grid_cells
-        self.cell_w = width / grid_cells
-        self.cell_h = height / grid_cells
-        self.num_blades = num_blades
-        self.min_freq = min_freq
-        self.max_freq = max_freq
-        self.min_snr = min_snr
-        n_cells = grid_cells * grid_cells
-        self.buffers = [deque(maxlen=fft_window_samples) for _ in range(n_cells)]
-
-    def accumulate(self, events):
-        if events.size == 0:
-            for buf in self.buffers:
-                buf.append(0)
-            return
-        cols = np.clip((events["x"] / self.cell_w).astype(int), 0, self.grid_cells - 1)
-        rows = np.clip((events["y"] / self.cell_h).astype(int), 0, self.grid_cells - 1)
-        indices = rows * self.grid_cells + cols
-        counts = np.bincount(indices, minlength=self.grid_cells * self.grid_cells)
-        for i, buf in enumerate(self.buffers):
-            buf.append(int(counts[i]))
-
-    def analyze(self, fs):
-        detections = []
-        for r in range(self.grid_cells):
-            for c in range(self.grid_cells):
-                idx = r * self.grid_cells + c
-                buf = self.buffers[idx]
-                n = len(buf)
-                if n < 16:
-                    continue
-                signal = np.array(buf, dtype=np.float64)
-                if np.mean(signal) < 1.0:
-                    continue
-                sig = signal - np.mean(signal)
-                window = np.hanning(n)
-                spectrum = np.fft.rfft(sig * window)
-                freqs = np.fft.rfftfreq(n, d=1.0 / fs)
-                magnitudes = np.abs(spectrum) * 2.0 / n
-                valid = (freqs >= self.min_freq) & (freqs <= self.max_freq)
-                if not np.any(valid):
-                    continue
-                valid_mags = magnitudes[valid]
-                valid_freqs = freqs[valid]
-                peak_idx = np.argmax(valid_mags)
-                peak_mag = valid_mags[peak_idx]
-                peak_freq = valid_freqs[peak_idx]
-                noise_floor = np.median(valid_mags)
-                snr = peak_mag / noise_floor if noise_floor > 0 else peak_mag
-                if snr >= self.min_snr:
-                    rpm = (peak_freq / self.num_blades) * 60
-                    detections.append({
-                        "row": r, "col": c,
-                        "freq_hz": float(peak_freq),
-                        "rpm": float(rpm),
-                        "snr": float(snr),
-                    })
-        return detections
-
-
-def cluster_detections(detections):
-    """Group adjacent grid cells with similar frequencies into propeller clusters."""
-    if not detections:
-        return []
-    used = [False] * len(detections)
-    clusters = []
-    for i, det in enumerate(detections):
-        if used[i]:
-            continue
-        cluster = [det]
-        used[i] = True
-        queue = [i]
-        while queue:
-            ci = queue.pop(0)
-            cd = detections[ci]
-            for j, other in enumerate(detections):
-                if used[j]:
-                    continue
-                if abs(cd["row"] - other["row"]) <= 1 and abs(cd["col"] - other["col"]) <= 1:
-                    freq_ratio = (max(cd["freq_hz"], other["freq_hz"])
-                                  / max(min(cd["freq_hz"], other["freq_hz"]), 1e-6))
-                    if freq_ratio <= 1.2:
-                        cluster.append(other)
-                        used[j] = True
-                        queue.append(j)
-        freqs = [d["freq_hz"] for d in cluster]
-        rpms = [d["rpm"] for d in cluster]
-        snrs = [d["snr"] for d in cluster]
-        rows = [d["row"] for d in cluster]
-        cols = [d["col"] for d in cluster]
-        clusters.append({
-            "center_row": float(np.mean(rows)),
-            "center_col": float(np.mean(cols)),
-            "freq_hz": float(np.median(freqs)),
-            "rpm": float(np.median(rpms)),
-            "n_cells": len(cluster),
-            "avg_snr": float(np.mean(snrs)),
-        })
-    clusters.sort(key=lambda c: c["n_cells"], reverse=True)
-    return clusters
-
-
-# ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
 
@@ -571,7 +461,8 @@ def main():
 
     # --- Bayesian detector ---
     bayesian = BayesianDroneDetector(
-        prior=args.prior, min_freq=args.min_freq, max_freq=args.max_freq)
+        prior=args.prior, min_freq=args.min_freq, max_freq=args.max_freq,
+        detection_threshold=args.detection_threshold)
 
     # --- Windows ---
     ev_window = MTWindow(title="Events - Fused Drone Detector",
