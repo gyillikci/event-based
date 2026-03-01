@@ -38,6 +38,8 @@ from metavision_sdk_core import PeriodicFrameGenerationAlgorithm, ColorPalette
 from metavision_sdk_ui import EventLoop, BaseWindow, MTWindow, UIAction, UIKeyEvent
 import cv2
 
+from propeller_utils import PropellerGridAnalyzer, cluster_detections
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
