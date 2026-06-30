@@ -1,0 +1,23 @@
+{
+  "gain": -0.011027946615314385,
+  "offset_deg": 0.37127920159973354,
+  "camera_hfov_deg": 63.8,
+  "metadata": {
+    "kind": "visual_to_acoustic_linear",
+    "rmse_deg": 0.6969217134138831,
+    "r2": 0.13673141309894365,
+    "solid": false,
+    "n_bins": 7,
+    "n_samples": 101,
+    "visual_range_deg": [
+      -25.760524215492595,
+      30.066569595222337
+    ],
+    "acoustic_range_deg": [
+      -1.0698095677348922,
+      1.4201485071081321
+    ],
+    "acoustic_span_deg": 2.4899580748430243,
+    "created": "2026-06-27T19:47:48"
+  }
+}

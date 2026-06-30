@@ -308,8 +308,99 @@ class FrequencyMapAnalyzer:
 
         # Sort by pixel count (largest = most confident)
         detections.sort(key=lambda d: d["pixels"], reverse=True)
+
+        # Post-process: merge nearby detections with similar frequencies
+        # (likely the same propeller detected as multiple clusters)
+        detections = self._consolidate_clusters(detections)
+
         self._update_timing(t0)
         return detections
+
+    def _consolidate_clusters(self, detections, merge_distance=150, freq_tolerance=0.15):
+        """Merge nearby detections with similar frequencies.
+
+        This handles cases where a single propeller creates multiple clusters
+        (e.g., two separate blades or disconnected fragments). Consolidating
+        them into one track per propeller reduces tracking overhead and drawing lag.
+
+        Args:
+            detections: List of raw detection dicts
+            merge_distance: Max distance (px) to consider merging
+            freq_tolerance: Max relative freq difference to merge (0.15 = ±15%)
+
+        Returns:
+            Consolidated list of detections (fewer entries, larger merged regions)
+        """
+        if len(detections) <= 1:
+            return detections
+
+        consolidated = []
+        used = set()
+
+        for i, det1 in enumerate(detections):
+            if i in used:
+                continue
+
+            # Start a new cluster with det1
+            merged = {
+                "x": det1["x"],
+                "y": det1["y"],
+                "freq_hz": det1["freq_hz"],
+                "rpm": det1["rpm"],
+                "pixels": det1["pixels"],
+                "bbox": det1["bbox"],
+                "freq_cv": det1["freq_cv"],
+            }
+            used.add(i)
+
+            # Try to merge subsequent detections into this cluster
+            for j in range(i + 1, len(detections)):
+                if j in used:
+                    continue
+
+                det2 = detections[j]
+
+                # Distance check
+                dx = det2["x"] - merged["x"]
+                dy = det2["y"] - merged["y"]
+                dist = np.sqrt(dx**2 + dy**2)
+                if dist > merge_distance:
+                    continue
+
+                # Frequency similarity check
+                f1, f2 = merged["freq_hz"], det2["freq_hz"]
+                freq_ratio = max(f1, f2) / max(min(f1, f2), 1e-6)
+                if freq_ratio > 1.0 + freq_tolerance:
+                    continue
+
+                # Merge: weighted average by pixel count
+                total_px = merged["pixels"] + det2["pixels"]
+                w1 = merged["pixels"] / total_px
+                w2 = det2["pixels"] / total_px
+
+                merged["x"] = w1 * merged["x"] + w2 * det2["x"]
+                merged["y"] = w1 * merged["y"] + w2 * det2["y"]
+                merged["freq_hz"] = w1 * merged["freq_hz"] + w2 * det2["freq_hz"]
+                merged["rpm"] = (merged["freq_hz"] / self.num_blades) * 60
+                merged["pixels"] = total_px
+
+                # Expand bounding box to encompass both
+                x1_a, y1_a, w_a, h_a = merged["bbox"]
+                x1_b, y1_b, w_b, h_b = det2["bbox"]
+                x1 = min(x1_a, x1_b)
+                y1 = min(y1_a, y1_b)
+                x2 = max(x1_a + w_a, x1_b + w_b)
+                y2 = max(y1_a + h_a, y1_b + h_b)
+                merged["bbox"] = (x1, y1, x2 - x1, y2 - y1)
+
+                # Average freq_cv
+                merged["freq_cv"] = (merged["freq_cv"] + det2["freq_cv"]) / 2
+
+                used.add(j)
+
+            consolidated.append(merged)
+
+        return consolidated
 
     def _update_timing(self, t0):
         """Update exponential moving average of analysis time."""
@@ -506,7 +597,13 @@ def draw_detections_on_frame(frame, confirmed_tracks, num_blades):
     Draws in-place to avoid an expensive full-frame copy (~2.7 MB at 1280x720).
     The frame is overwritten by PeriodicFrameGenerationAlgorithm on the next
     callback anyway, so in-place modification is safe.
+
+    Optimized: when many tracks are present, use minimal text rendering
+    to avoid cv2.getTextSize overhead.
     """
+    n_tracks = len(confirmed_tracks)
+    use_full_labels = n_tracks <= 8  # Full labels only for few tracks
+
     for track in confirmed_tracks:
         x, y, w, h = track["bbox"]
         margin = max(10, int(max(w, h) * 0.3))
@@ -522,31 +619,43 @@ def draw_detections_on_frame(frame, confirmed_tracks, num_blades):
 
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
 
-        freq = track["freq_hz"]
-        rpm = track["rpm"]
-        px = track["pixels"]
-        conf = track.get("confidence", 0.0)
-        label1 = f"ID{track['id']}: {freq:.0f}Hz {rpm:.0f}RPM"
-        label2 = f"{px}px conf={conf:.0%}"
+        if use_full_labels:
+            # Full rendering: ID, frequency, RPM, confidence
+            freq = track["freq_hz"]
+            rpm = track["rpm"]
+            px = track["pixels"]
+            conf = track.get("confidence", 0.0)
+            label1 = f"ID{track['id']}: {freq:.0f}Hz {rpm:.0f}RPM"
+            label2 = f"{px}px conf={conf:.0%}"
 
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 0.5
-        text_thick = 1
-        (tw1, th1), _ = cv2.getTextSize(label1, font, font_scale, text_thick)
-        (tw2, th2), _ = cv2.getTextSize(label2, font, font_scale, text_thick)
-        tw = max(tw1, tw2)
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.5
+            text_thick = 1
+            (tw1, th1), _ = cv2.getTextSize(label1, font, font_scale, text_thick)
+            (tw2, th2), _ = cv2.getTextSize(label2, font, font_scale, text_thick)
+            tw = max(tw1, tw2)
 
-        ty = y1 - 5
-        if ty - th1 - th2 - 8 < 0:
-            ty = y2 + th1 + 5
+            ty = y1 - 5
+            if ty - th1 - th2 - 8 < 0:
+                ty = y2 + th1 + 5
 
-        cv2.rectangle(frame, (x1, ty - th1 - th2 - 8),
-                      (x1 + tw + 6, ty + 4), (0, 0, 0), -1)
-        cv2.putText(frame, label1, (x1 + 3, ty - th2 - 4),
-                    font, font_scale, color, text_thick, cv2.LINE_AA)
-        cv2.putText(frame, label2, (x1 + 3, ty),
-                    font, font_scale, color, text_thick, cv2.LINE_AA)
+            cv2.rectangle(frame, (x1, ty - th1 - th2 - 8),
+                          (x1 + tw + 6, ty + 4), (0, 0, 0), -1)
+            cv2.putText(frame, label1, (x1 + 3, ty - th2 - 4),
+                        font, font_scale, color, text_thick, cv2.LINE_AA)
+            cv2.putText(frame, label2, (x1 + 3, ty),
+                        font, font_scale, color, text_thick, cv2.LINE_AA)
+        else:
+            # Minimal rendering: just ID and frequency (fast)
+            freq = track["freq_hz"]
+            label = f"ID{track['id']}: {freq:.0f}Hz"
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.4
+            text_thick = 1
+            cv2.putText(frame, label, (x1 + 3, y1 - 3),
+                        font, font_scale, color, text_thick, cv2.LINE_AA)
 
+        # Center marker (always show)
         cx, cy_pt = int(track["x"]), int(track["y"])
         cv2.drawMarker(frame, (cx, cy_pt), color,
                        cv2.MARKER_CROSS, 12, thickness)

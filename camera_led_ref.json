@@ -1,0 +1,9 @@
+{
+  "led_index": 11,
+  "angle_deg": 330.0,
+  "num_leds": 12,
+  "axis_leds": [5, 11],
+  "forward_led": 11,
+  "back_led": 5,
+  "note": "LED5->LED11 line is parallel to camera z-axis; LED11 = camera forward (centre of view)."
+}
