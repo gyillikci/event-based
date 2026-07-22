@@ -81,3 +81,8 @@ logs/fusion_session_fix_try.jsonl
 *.npy
 output/
 results/
+
+# LaTeX build artifacts
+paper/*.aux
+paper/*.log
+paper/*.out
