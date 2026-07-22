@@ -1,0 +1,541 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{url}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+
+\title{Passive RF-Silent Drone Detection via Neuromorphic Vision and
+Acoustic Sensor Fusion of the Propeller Blade-Pass Frequency}
+
+\author{\IEEEauthorblockN{Giray Yillikci}
+\IEEEauthorblockA{\textit{Independent Researcher} \\
+gyillikci@gmail.com}}
+
+\maketitle
+
+\begin{abstract}
+We investigate passive, RF-silent drone detection by exploiting the fact
+that a spinning propeller emits a characteristic blade-pass frequency
+(BPF) simultaneously in two physical channels: optical flicker, sensed by
+a neuromorphic event camera, and acoustic pressure, sensed by a microphone
+array. We present a working prototype that (i)~extracts per-pixel flicker
+frequency from a Prophesee EVK4-HD event camera and isolates propeller
+regions via connected-component spatial clustering and temporal tracking,
+(ii)~extracts the acoustic BPF and a direction-of-arrival (DOA) estimate
+from a four-microphone array using multi-channel FFT and GCC-PHAT, and
+(iii)~fuses the two streams with a sequential Bayesian updater that
+includes harmonic-aware frequency cross-validation. The central finding is
+methodological: detection \emph{architecture}, not parameter tuning,
+determines success. A grid-FFT baseline failed at range regardless of
+tuning, whereas replacing it with per-pixel frequency extraction and
+connected-component clustering produced stable, low-false-positive
+detection, with first-detection latency reduced from 600--1200\,ms to
+approximately 100\,ms after real-time optimization. Acoustic BPF detection
+and cross-modal frequency agreement worked reliably; cross-modal
+\emph{spatial} (azimuth) calibration did not converge to a usable model
+under our indoor test conditions ($R^2 = 0.137$), which we report as an
+instructive negative result.
+\end{abstract}
+
+\begin{IEEEkeywords}
+event camera, neuromorphic vision, drone detection, counter-UAS, sensor
+fusion, microphone array, blade-pass frequency, Bayesian inference
+\end{IEEEkeywords}
+
+\section{Introduction}
+Consumer drones are inexpensive, increasingly autonomous, and---critically
+for defense applications---can fly with no active radio-frequency (RF)
+link by navigating GPS waypoints. This defeats RF scanning, the dominant
+commercial drone-detection technology. Each of the remaining passive and
+active modalities has a structural blind spot, summarized in
+Table~\ref{tab:modalities}: radar struggles to separate small drones from
+birds, frame-based cameras suffer motion blur and limited dynamic range,
+and acoustic-only systems exhibit short range and false-positive rates of
+10--20\,\% in ambient noise.
+
+\begin{table}[t]
+\caption{Structural Weaknesses of Existing Detection Modalities}
+\label{tab:modalities}
+\centering
+\begin{tabular}{@{}p{1.5cm}p{2.6cm}p{3.2cm}@{}}
+\toprule
+\textbf{Modality} & \textbf{Mechanism} & \textbf{Structural weakness} \\
+\midrule
+RF scanning & Detect drone radio protocol & Blind to autonomous / RF-silent drones \\
+Radar & Reflected RF & Cannot separate small drones from birds; high cost \\
+RGB / thermal & Frame imaging (30--60\,fps) & Motion blur, ${\sim}60$\,dB dynamic range, fails in low light / fog \\
+Acoustic only & Propeller sound & Short range; 10--20\,\% false-positive rate in noise \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Research Question and Hypothesis}
+We ask: can a \emph{passive} sensor combination exploit the
+physics-guaranteed propeller blade-pass frequency (BPF) to detect drones
+with a false-alarm rate far below acoustic-only systems, without any RF
+emission?
+
+Our hypothesis is that because the BPF appears simultaneously in the
+optical and acoustic domains, requiring \emph{cross-modal frequency
+agreement} should suppress the dominant false-alarm sources---each of
+which usually manifests in only one modality---driving the joint
+false-positive probability sharply down.
+
+\subsection{Contributions}
+This paper makes the following contributions:
+\begin{enumerate}
+\item A working prototype, to our knowledge the first, that fuses a
+      neuromorphic event camera with a microphone array for drone
+      detection via the shared BPF observable.
+\item An architectural ablation demonstrating that per-pixel frequency
+      extraction with connected-component spatial clustering succeeds
+      where a grid-FFT baseline fails at range regardless of parameter
+      tuning---a transferable lesson for event-based detection pipelines.
+\item A harmonic-aware cross-modal frequency validation scheme and a
+      gated sequential Bayesian fusion framework, with observed
+      accumulate/decay dynamics matching design intent.
+\item Real-time engineering techniques (downscaled morphology,
+      pre-allocated buffers, region-of-interest statistics) that reduce
+      first-detection latency by $6$--$12\times$.
+\item An honest account of negative results, including the failure of
+      visual-to-acoustic azimuth calibration to converge indoors, and the
+      unsuitability of a speech-oriented DOA framework (ODAS) for
+      impulsive propeller acoustics.
+\end{enumerate}
+
+\section{Related Work}
+\textbf{Event-based vision.} Neuromorphic event cameras asynchronously
+report per-pixel log-intensity changes with microsecond latency and
+$>$120\,dB dynamic range \cite{lichtsteiner2008,gallego2020}. Modern
+sensors such as the Sony IMX636 provide HD resolution in a stacked
+back-illuminated process \cite{finateu2020}. Their temporal resolution
+makes them natural instruments for measuring high-frequency periodic
+phenomena such as vibration and rotating machinery---the property we
+exploit here.
+
+\textbf{Counter-UAS detection.} Surveys of drone detection cover RF,
+radar, electro-optical, and acoustic approaches
+\cite{guvenc2018,taha2019}. Acoustic systems detect the propeller's
+harmonic signature but suffer short range and high false-alarm rates in
+noise; radar and RF systems are active or blind to RF-silent targets. We
+are not aware of prior work fusing an event camera with a microphone
+array for counter-UAS purposes.
+
+\textbf{Acoustic DOA.} Generalized cross-correlation with phase transform
+(GCC-PHAT) \cite{knapp1976} remains the standard lightweight
+time-difference-of-arrival estimator; ODAS \cite{grondin2019} provides an
+integrated localization/tracking stack tuned primarily for speech.
+
+\textbf{Light-flicker positioning.} A companion line of work uses
+luminaire flicker as a location fingerprint \cite{zhang2016litell,
+zhu2017ilamp, wang2020vlp}; we discuss a preliminary feasibility study in
+Section~\ref{sec:future}.
+
+\section{Physical Principle}
+A propeller with $B$ blades rotating at shaft rate $f_s$ (Hz) modulates
+both reflected light and radiated sound at the blade-pass frequency
+\begin{equation}
+f_{\mathrm{BPF}} = B \cdot f_s = \frac{B \cdot \mathrm{RPM}}{60}.
+\label{eq:bpf}
+\end{equation}
+Optically, each blade sweep changes local scene luminance, generating
+events in a neuromorphic sensor at $f_{\mathrm{BPF}}$ (and harmonics).
+Acoustically, the pressure field carries the same fundamental and its
+harmonics. Because the two channels share a single physical cause,
+requiring their measured frequencies to agree (up to harmonic ambiguity,
+Section~\ref{sec:fusion}) rejects noise sources that are periodic in only
+one modality---flickering luminaires, wind noise, speech, or vibrating
+structures.
+
+\section{Visual Detection Pipeline}
+\label{sec:visual}
+The visual pipeline went through nine documented iterations; the crucial
+step was an architectural replacement, not tuning.
+
+\subsection{Baseline: Grid-Based FFT (v1) --- Failure at Range}
+The first detector divided the $1280\times720$ sensor into a
+$16\times16$ grid, counted events per cell per 500\,\textmu s slice, ran a
+rolling-window FFT per cell, thresholded on SNR, and clustered adjacent
+active cells. This worked only at centimeter range: at distance the
+propeller occupies a handful of pixels inside a $160\times90$ cell crowded
+with noise pixels, so its spectral peak is diluted below the cell noise
+floor.
+
+\subsection{Parameter Tuning --- A Key Negative Result}
+To chase range, thresholds were relaxed aggressively (filter length
+$7\!\to\!4$, maximum period difference $500\!\to\!1500$\,\textmu s,
+minimum pixel count $25\!\to\!5$, grid $16\!\to\!8$ cells, FFT window
+$0.5\!\to\!1.0$\,s, minimum SNR $3.0\!\to\!2.0$). The result was 25--43
+``propeller regions'' per frame scattered across random
+frequencies---pure noise promoted to false positives. The grid FFT has no
+notion of spatial coherence: it never asks whether the active pixels in a
+cell are spatially or spectrally consistent. \emph{Parameter tuning
+cannot repair a fundamentally wrong architecture.}
+
+\subsection{Per-Pixel Frequency + Connected Components (v2)}
+The redesigned pipeline is
+\begin{equation*}
+\begin{split}
+\text{per-pixel freq.\ map} &\rightarrow \text{binary mask}
+\rightarrow \text{dilation} \\
+&\rightarrow \text{connected components} \\
+&\rightarrow \text{freq.-consistency filter}
+\rightarrow \text{tracking}.
+\end{split}
+\end{equation*}
+Three design choices proved decisive:
+\begin{itemize}
+\item \textbf{Spatial clustering instead of a fixed grid.} Connected-com\-po\-nent
+      labeling adapts to the propeller's true shape; even 2--3 connected
+      pixels at a consistent frequency are meaningful, while the same
+      pixels scattered across a grid cell are not.
+\item \textbf{Frequency-consistency gate.} Within each cluster the
+      coefficient of variation of per-pixel frequency must satisfy
+      $\mathrm{CV} \le 0.3$.
+\item \textbf{Temporal tracking.} Greedy association on spatial
+      proximity ($<$100\,px) and frequency similarity ($<$30\,\%);
+      confirmation only after a minimum number of consecutive hits;
+      pruning after 8 idle frames; exponential smoothing
+      ($\alpha = 0.3$) of position and frequency.
+\end{itemize}
+On a 3-blade bench propeller this yielded a single stable track at
+${\sim}99.7$\,Hz ($\approx$2{,}990 blade passes per minute equivalent),
+locked position, ${\sim}100$ active pixels, and $270{+}$ consecutive hits
+over the recording, with transient single-pixel false positives pruned
+within 1--2\,s.
+
+\subsection{Ablation: Minimum Cluster Size}
+Setting the minimum cluster size to a single pixel produced 13--17
+``confirmed propellers'' per frame at random frequencies, confirming that
+\emph{spatial coherence ($\ge$2 connected pixels) is the primary
+false-positive filter}: a single pixel carries no spatial information and
+is indistinguishable from sensor noise. The final configuration (minimum
+2 pixels, 5 confirmation hits) yielded clean detections with zero false
+positives and multi-pixel clusters (35--269\,px) tracked over $80{+}$ hits
+in a 32\,s recording.
+
+\subsection{Real-Time Optimization (v3)}
+The synchronous frequency-map callback initially ran full-resolution
+morphology, connected-component analysis, and a frame copy at 25\,Hz,
+costing ${\sim}315$\,ms of CPU per wall-clock second and causing
+monotonically growing display lag. Four fixes eliminated the drift:
+(1)~$4\times$ downscaling ($1280\times720 \to 320\times180$) before
+morphology; (2)~reducing the update rate to 10\,Hz; (3)~in-place frame
+drawing; and (4)~early exit on near-empty masks, reducing callback cost
+to ${\sim}20$\,ms/s. A subsequent production pass added pre-allocated
+buffers (eliminating garbage-collection jitter), region-of-interest-only
+frequency statistics, velocity-predictive tracking, and a Bayesian
+confidence score replacing the hard hit-count threshold: each observation
+contributes likelihood
+\begin{equation}
+p = 0.65 + q\,(0.85 - 0.65),
+\end{equation}
+where $q \in [0,1]$ combines pixel-count and frequency-consistency
+sub-scores, accumulated as
+\begin{equation}
+P = 1 - (1 - p)^n
+\end{equation}
+over $n$ observations and decayed by $0.8\times$ per idle frame.
+Table~\ref{tab:latency} summarizes the measured effect.
+
+\begin{table}[t]
+\caption{Visual Detector Performance, v2 vs.\ v3}
+\label{tab:latency}
+\centering
+\begin{tabular}{@{}lccc@{}}
+\toprule
+\textbf{Metric} & \textbf{v2} & \textbf{v3} & \textbf{Gain} \\
+\midrule
+First detect (strong signal) & 600--1200\,ms & ${\sim}100$\,ms & $6$--$12\times$ \\
+First detect (weak signal) & 600--1200\,ms & ${\sim}200$\,ms & $3$--$6\times$ \\
+Steady-state update & 100--140\,ms & 50--90\,ms & ${\sim}2\times$ \\
+Per-frame analysis & ${\sim}1.5$\,ms & ${\sim}0.8$\,ms & ${\sim}2\times$ \\
+GC jitter & $\pm 5$\,ms & $<\pm 1$\,ms & ${\sim}5\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Acoustic Detection Pipeline}
+\label{sec:acoustic}
+
+\subsection{BPF Extraction}
+A rolling 0.2\,s window (3200 samples at 16\,kHz) per channel is
+Hann-windowed and transformed; magnitude spectra are incoherently averaged
+across the four channels (${\sim}6$\,dB SNR gain). The peak is picked in
+the target band, its SNR computed against the median noise floor, and
+detections below a minimum SNR of 3.0 rejected. This proved reliable on
+sustained propeller tones; source calibration on the bench propeller
+measured a dominant tone at 162.7\,Hz with SNR $\approx 24$\,dB.
+
+\subsection{DOA via GCC-PHAT}
+For each opposing microphone pair (64\,mm baseline) we compute the
+phase-transform cross-spectrum
+\begin{equation}
+R_{12}(\tau) = \int
+\frac{X_1(\omega) X_2^{*}(\omega)}{\left| X_1(\omega) X_2^{*}(\omega)
+\right|} \, W(\omega)\, e^{j\omega\tau} \, d\omega,
+\label{eq:gccphat}
+\end{equation}
+with a frequency weighting $W(\omega)$ emphasizing the target band,
+$4\times$ zero-padded inverse transform for sub-sample delay resolution,
+parabolic peak interpolation, and a peak-to-second-peak confidence-ratio
+gate ($\ge 1.5$). Pair estimates are fused by averaging when both are
+confident, followed by a 7-sample median filter; the sample spread gates
+unstable bearings. This yields usable azimuth on steady tones; the planar
+32\,mm-radius array cannot resolve elevation and provides
+${\sim}\pm 10^{\circ}$ azimuth accuracy at range.
+
+\subsection{ODAS --- A Negative Result}
+We integrated the ODAS framework \cite{grondin2019} via a custom socket
+relay. It produced robust DOA on speech (sustained utterances of 500\,ms
+or more) but was unreliable on propeller acoustics, which are
+comparatively impulsive and broadband. This motivated the custom GCC-PHAT
+implementation above. The array's on-board DSP additionally exposes a
+firmware DOA with speech-tuned voice-activity detection; it was likewise
+unreliable on steady tones and was not fused.
+
+\section{Sensor Fusion}
+\label{sec:fusion}
+
+\subsection{Harmonic-Aware Frequency Cross-Validation}
+One modality frequently reports the blade-pass tone while the other
+reports the shaft fundamental or a harmonic. We therefore search harmonic
+pairs $(n_v, n_a)$, $1 \le n_v, n_a \le 4$, and declare a match if
+\begin{equation}
+\frac{\left| f_v / n_v - f_a / n_a \right|}{f_a / n_a} < 0.05,
+\label{eq:harmonic}
+\end{equation}
+returning confidence $1 / (n_v n_a)$ so that fundamental-to-fundamental
+agreement outweighs high-order coincidences.
+
+\subsection{Sequential Bayesian Updating}
+Starting from prior $P(D) = 0.001$, each modality contributes a
+likelihood-ratio update with sigmoid likelihoods:
+\begin{align}
+P(V \mid D) &= \sigma(\mathrm{SNR}_v - 5), &
+P(V \mid \neg D) &= 0.01\, e^{-0.5\,\mathrm{SNR}_v}, \\
+P(A \mid D) &= \sigma(\mathrm{SNR}_a - 4), &
+P(A \mid \neg D) &= 0.05,
+\end{align}
+with the acoustic false-alarm likelihood reduced to 0.005 when the noise
+floor is elevated. A cross-modal frequency match contributes
+$P(F \mid D) = 0.99 \cdot \mathrm{conf}$ against
+$P(F \mid \neg D) = 0.001$. When no evidence arrives, the posterior
+decays toward the prior by $0.995\times$ per frame. A drone is declared
+at $P > 0.8$.
+
+\subsection{Fusion Gating}
+To prevent overconfident fusion from coincidental evidence, several gates
+proved necessary in practice: a visual quality gate (minimum pixel count
+and track confidence $\ge 0.98$); an acoustic stability gate (persistence
+and frequency jitter $\le 25$\,Hz); a temporal association gate
+($|t_v - t_a| \le {\sim}200$\,ms); an angle-residual gate (visual azimuth
+vs.\ acoustic DOA within $35^{\circ}$); and stricter audio-only gates
+(SNR $\ge 6$\,dB \emph{and} bounded DOA spread) before an audio-only
+update may raise $P(D)$. In a live run with no propeller in view, the
+detector repeatedly latched $P(D) \to {\sim}1.0$ on strong 140--200\,Hz
+tones through the audio-only path and decayed back when the source
+stopped---the accumulate/decay dynamics behaved as designed, and the run
+illustrates that single-modality dominance is a real failure mode that
+the gates must police.
+
+\section{Implementation}
+\textbf{Visual.} Prophesee EVK4-HD (Sony IMX636, $1280\times720$,
+${\sim}1$\,\textmu s per-pixel temporal resolution, $>$120\,dB dynamic
+range) \cite{finateu2020}, with a $220^{\circ}$ fisheye lens for
+hemispheric coverage and a rectilinear C-mount lens
+($63.8^{\circ}$ HFOV) for azimuth experiments; Metavision SDK frequency
+map algorithms.
+\textbf{Acoustic.} ReSpeaker 4-mic circular USB array (32\,mm radius,
+64\,mm opposing-pair baseline), 16\,kHz / 16-bit capture; on-board XMOS
+XVF-3000 DSP and a 12-LED ring used as a physical bearing indicator.
+Pixel-to-azimuth mapping uses a pinhole model,
+$f_{\mathrm{px}} = (W/2)/\tan(\mathrm{HFOV}/2)$,
+$\mathrm{az} = \mathrm{atan2}(x - W/2,\, f_{\mathrm{px}})$.
+\textbf{Software.} Python~3.9 (required by the SDK binaries), NumPy,
+OpenCV, PyAudio. The visual Nyquist constraint is
+$f_{\max} \le 10^{6} / (2\,\Delta t)$ for accumulation period
+$\Delta t$ in \textmu s (1\,kHz at the default
+$\Delta t = 500$\,\textmu s). Session traces are logged as JSONL with
+per-interval posterior, evidence, association lag, and gate states.
+
+\section{Experiments and Results}
+All experiments used a bench propeller as a controlled rotating source
+and a synthetic on-screen vibration generator (15--120\,Hz) for
+end-to-end validation of the visual frequency pipeline. Recordings were
+indoor, single-source, and ${\sim}30$\,s long.
+
+\subsection{Summary of Outcomes}
+Table~\ref{tab:outcomes} consolidates what worked and what failed across
+the study.
+
+\begin{table}[t]
+\caption{Consolidated Outcomes}
+\label{tab:outcomes}
+\centering
+\begin{tabular}{@{}p{5.6cm}c@{}}
+\toprule
+\textbf{Method / component} & \textbf{Outcome} \\
+\midrule
+Per-pixel flicker-frequency extraction & \checkmark \\
+Connected-component spatial clustering & \checkmark \\
+Temporal tracking + Bayesian confidence & \checkmark \\
+Real-time latency engineering & \checkmark \\
+Acoustic BPF via multi-channel FFT & \checkmark \\
+GCC-PHAT azimuth on sustained tones & \checkmark \\
+Harmonic-aware frequency cross-validation & \checkmark \\
+Gated sequential Bayesian fusion & \checkmark \\
+\midrule
+Grid-FFT architecture (v1) & $\times$ \\
+Parameter tuning to extend range & $\times$ \\
+Single-pixel minimum cluster size & $\times$ \\
+ODAS for propeller acoustics & $\times$ \\
+Visual$\rightarrow$acoustic azimuth calibration & $\times$ \\
+Elevation DOA (planar array) & $\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Azimuth Calibration --- A Negative Result}
+\label{sec:azimuth}
+To validate the angle-residual gate we attempted to fit a linear map
+$\mathrm{DOA}_a = g \cdot \mathrm{az}_v + b$ by sweeping a co-located
+source laterally, binning samples by visual azimuth with robust per-bin
+medians, and fitting with iterative MAD outlier rejection and an $R^2$
+solidity check (threshold 0.6). The best fit (rectilinear lens,
+$63.8^{\circ}$ HFOV) achieved $g = -0.011$, $b = 0.37^{\circ}$,
+$R^2 = 0.137$, RMSE $0.70^{\circ}$---not solid. The acoustic DOA spanned
+only ${\sim}\pm 1.2^{\circ}$ while the visual sweep spanned
+${\sim}\pm 25^{\circ}$, consistent with indoor reverberation, an
+insufficiently wide or slow sweep, or low GCC-PHAT confidence during the
+session. Cross-modal \emph{spatial} fusion therefore remains unvalidated;
+cross-modal \emph{frequency} fusion is validated.
+
+\section{Discussion and Lessons Learned}
+\textbf{Architecture beats tuning.} The single most consequential change
+in the project was architectural: replacing grid-FFT event counting with
+per-pixel frequency extraction and connected-component clustering. No
+amount of threshold relaxation rescued the grid detector; it merely
+promoted the noise floor to false positives.
+
+\textbf{Spatial coherence is the false-positive filter.} The
+single-pixel ablation demonstrates that requiring as few as two connected
+pixels at a consistent frequency removes essentially all sensor-noise
+detections. Persistence (temporal tracking) removes roughly 95\,\% of the
+remaining transients.
+
+\textbf{Modality dominance is a real failure mode.} The audio-only run
+in Section~\ref{sec:fusion} shows that a Bayesian fuser will happily
+saturate on one strong modality; explicit quality, association, and angle
+gates---not the update rule itself---are what make fusion trustworthy.
+
+\textbf{Tool-domain mismatch.} ODAS and the array's firmware DOA, both
+tuned for speech, failed on propeller acoustics---a reminder that
+off-the-shelf audition stacks encode source assumptions that must be
+checked before integration.
+
+\section{Limitations and Future Work}
+\label{sec:future}
+Table~\ref{tab:limits} lists the principal threats to validity. All
+detection results are from indoor, short, single-source lab recordings;
+no outdoor, multi-drone, or GPS-ground-truth validation was performed,
+so range figures are projections rather than measurements, and the
+sub-0.1\,\% false-positive-rate target is design-derived and must be
+established empirically on a labeled dataset. The 32\,mm planar array
+cannot resolve elevation, harmonic ambiguity (a 2-blade propeller at
+100\,Hz BPF is indistinguishable from a 4-blade at 50\,Hz shaft rate)
+requires external metadata, and there is no hardware inter-sensor clock
+(${\sim}100$\,ms association uncertainty).
+
+Future work includes outdoor validation with GPS ground truth, a
+non-planar or larger-baseline array for elevation, hardware time
+synchronization, multi-target tracking, and repeating the azimuth
+calibration outdoors with a wider, slower sweep. A companion feasibility
+study on using ceiling-light flicker frequencies as location
+fingerprints---inspired by LiTell \cite{zhang2016litell},
+iLAMP \cite{zhu2017ilamp}, and event-camera visible-light positioning
+\cite{wang2020vlp}---completed a literature review and utility
+implementation with a positive feasibility verdict, but end-to-end
+validation remains open.
+
+\begin{table}[t]
+\caption{Limitations and Threats to Validity}
+\label{tab:limits}
+\centering
+\begin{tabular}{@{}p{2.0cm}p{5.2cm}@{}}
+\toprule
+\textbf{Area} & \textbf{Limitation} \\
+\midrule
+Dataset & Indoor, single source, ${\sim}30$\,s recordings \\
+Range & No outdoor / GPS ground-truth tests \\
+Spatial fusion & Azimuth calibration weak ($R^2 = 0.137$) \\
+DOA & Planar 32\,mm array; ${\sim}\pm 10^{\circ}$, no elevation \\
+Multi-target & One source per cluster assumed \\
+Synchronization & No hardware clock; ${\sim}100$\,ms uncertainty \\
+Harmonics & Blade-count / shaft-rate ambiguity \\
+FPR claim & Design-derived, not yet measured \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Conclusion}
+We demonstrated a passive, RF-silent drone-detection prototype that fuses
+neuromorphic vision and acoustic sensing through the shared blade-pass
+frequency observable. The validated contributions are the architectural
+comparison (per-pixel frequency plus connected components decisively
+outperforms grid FFT), the real-time engineering that brings
+first-detection latency to ${\sim}100$\,ms, harmonic-aware cross-modal
+frequency validation, and gated sequential Bayesian fusion whose
+accumulate/decay dynamics behave as designed. We report the failure of
+indoor visual-to-acoustic azimuth calibration as a genuine, instructive
+negative result rather than an omission. Range and false-positive-rate
+figures remain design targets pending outdoor validation on labeled data.
+
+\begin{thebibliography}{00}
+\bibitem{lichtsteiner2008} P. Lichtsteiner, C. Posch, and T. Delbruck,
+``A $128\times128$ 120 dB 15 $\mu$s latency asynchronous temporal
+contrast vision sensor,'' \emph{IEEE J. Solid-State Circuits}, vol. 43,
+no. 2, pp. 566--576, 2008.
+\bibitem{gallego2020} G. Gallego \emph{et al.}, ``Event-based vision: A
+survey,'' \emph{IEEE Trans. Pattern Anal. Mach. Intell.}, vol. 44, no. 1,
+pp. 154--180, 2022.
+\bibitem{finateu2020} T. Finateu \emph{et al.}, ``A $1280\times720$
+back-illuminated stacked temporal contrast event-based vision sensor with
+4.86 $\mu$m pixels, 1.066 GEPS readout, programmable event-rate
+controller and compressive data-formatting pipeline,'' in \emph{IEEE Int.
+Solid-State Circuits Conf. (ISSCC)}, 2020, pp. 112--114.
+\bibitem{guvenc2018} I. Guvenc, F. Koohifar, S. Singh, M. L. Sichitiu,
+and D. Matolak, ``Detection, tracking, and interdiction for amateur
+drones,'' \emph{IEEE Commun. Mag.}, vol. 56, no. 4, pp. 75--81, 2018.
+\bibitem{taha2019} B. Taha and A. Shoufan, ``Machine learning-based drone
+detection and classification: State-of-the-art in research,'' \emph{IEEE
+Access}, vol. 7, pp. 138669--138682, 2019.
+\bibitem{knapp1976} C. Knapp and G. Carter, ``The generalized correlation
+method for estimation of time delay,'' \emph{IEEE Trans. Acoust., Speech,
+Signal Process.}, vol. 24, no. 4, pp. 320--327, 1976.
+\bibitem{grondin2019} F. Grondin and F. Michaud, ``Lightweight and
+optimized sound source localization and tracking methods for open and
+closed microphone array configurations,'' \emph{Robot. Auton. Syst.},
+vol. 113, pp. 63--80, 2019.
+\bibitem{zhang2016litell} C. Zhang and X. Zhang, ``LiTell: Robust indoor
+localization using unmodified light fixtures,'' in \emph{Proc. ACM
+MobiCom}, 2016, pp. 230--242.
+\bibitem{zhu2017ilamp} S. Zhu and X. Zhang, ``Enabling high-precision
+visible light localization in today's buildings,'' in \emph{Proc. ACM
+MobiSys}, 2017, pp. 96--108.
+\bibitem{wang2020vlp} G. Wang \emph{et al.}, ``Visible light positioning
+using an event camera,'' \emph{IEEE Sensors}, 2020.
+\end{thebibliography}
+
+\end{document}
