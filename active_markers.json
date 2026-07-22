@@ -1,0 +1,38 @@
+{
+    "_comment": "Active LED marker frequency table. Single source of truth shared by the Arduino firmware (arduino/active_markers/active_markers.ino) and the PC detector (detect_active_markers.py). Each LED blinks at a fixed, unique frequency so the event camera can identify it. Keep frequencies well separated (> 2x match_tolerance_hz apart) so IDs never overlap. Colors are BGR for OpenCV overlays.",
+    "band": {
+        "min_freq_hz": 500,
+        "max_freq_hz": 2000
+    },
+    "match_tolerance_hz": 120,
+    "markers": [
+        {
+            "id": 1,
+            "name": "BUILTIN",
+            "pin": "LED_BUILTIN (D13)",
+            "freq_hz": 800,
+            "color_bgr": [0, 165, 255]
+        },
+        {
+            "id": 2,
+            "name": "RED",
+            "pin": "LEDR",
+            "freq_hz": 1100,
+            "color_bgr": [0, 0, 255]
+        },
+        {
+            "id": 3,
+            "name": "GREEN",
+            "pin": "LEDG",
+            "freq_hz": 1500,
+            "color_bgr": [0, 255, 0]
+        },
+        {
+            "id": 4,
+            "name": "BLUE",
+            "pin": "LEDB",
+            "freq_hz": 2000,
+            "color_bgr": [255, 0, 0]
+        }
+    ]
+}
