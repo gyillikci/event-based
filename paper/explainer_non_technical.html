@@ -184,6 +184,7 @@
     aspect-ratio: 3 / 4; display: grid; place-items: center; padding: 1.4rem;
     border: 1px dashed var(--rule);
   }
+  .shot--wide { aspect-ratio: 16 / 6; }
   .shot-note { max-width: 30ch; text-align: center; color: var(--ink-muted); font-size: .9rem; }
   .shot-note .tag {
     font-family: var(--mono); font-size: .68rem; letter-spacing: .14em;
@@ -517,11 +518,12 @@
           Your browser cannot play embedded video.
         </video>
         <figcaption>
-          <b>The target.</b> A small quadcopter over an orchard. Turn the sound on and
-          you can hear the propeller tone the microphones listen for; watch the blades
-          and you are looking at the flicker the camera measures. One machine, both
-          signatures, at the same rate — the whole premise of the project in a single
-          clip.
+          <b>The target.</b> The quadcopter used in the first field test, hovering over an
+          orchard. Turn the sound on and you can hear the propeller tone the microphones
+          listen for; watch the blades and you are looking at the flicker the camera
+          measures. One machine, both signatures — the whole premise of the project in a
+          single clip. What the detector made of it is <a href="#field-test">further
+          down</a>.
         </figcaption>
       </figure>
     </div>
@@ -685,27 +687,98 @@
     </div>
   </section>
 
+  <!-- ============ FIELD TEST ============ -->
+  <section id="field-test">
+    <p class="eyebrow">Out of the lab &middot; First field test</p>
+    <h2>Pointed at a real drone, outdoors</h2>
+    <div class="col">
+      <p class="lede">
+        The rig has now been taken outside and aimed at an actual quadcopter hovering over
+        open ground. This is the first time the detector has faced a real drone rather than
+        a bench fan — and the two halves of the system behaved very differently.
+      </p>
+      <p>
+        <strong>The camera worked.</strong> Against a cluttered outdoor scene — ground,
+        vegetation, wires, moving shadows — the detector picked the drone out and held it,
+        reporting a steady propeller rhythm of about 106 to 109 flickers per second and a
+        matching rotation speed near 3,200&nbsp;RPM, at full track confidence. It kept up
+        comfortably in real time, spending roughly 4 to 5 milliseconds analysing each frame.
+      </p>
+    </div>
+
+    <div class="readout">
+      <div class="stat"><span class="n">106–109 Hz</span><span class="k">propeller rhythm measured optically, outdoors</span></div>
+      <div class="stat"><span class="n">~3,200</span><span class="k">RPM, held steadily while the drone hovered</span></div>
+      <div class="stat"><span class="n">100%</span><span class="k">track confidence on the confirmed drone</span></div>
+      <div class="stat"><span class="n">4.3–5.0 ms</span><span class="k">to analyse each frame, live in the field</span></div>
+    </div>
+
+    <div class="col">
+      <p>
+        <strong>The cross-check did not fire</strong> — and the reason turned out to be a
+        setting, not the physics. The microphone side had been left searching a narrow band
+        of pitches from 140 to 200 cycles per second, chosen back when the test source was a
+        bench fan. The real drone sits at about 106. Its true pitch was therefore
+        <em>outside the range the ear was allowed to look in</em>, so the microphones locked
+        onto whatever else they could find in that window while the camera was looking at the
+        drone itself. The same range setting also governs the combining step, which then
+        treated the camera's perfectly good reading as out-of-bounds evidence and pushed its
+        confidence down rather than up.
+      </p>
+      <p>
+        That is a one-line correction — widen the band the microphones are allowed to search
+        so it covers where this drone actually sits — and it is exactly the kind of thing a
+        first field test exists to surface.
+      </p>
+    </div>
+
+    <figure class="media-item" style="margin-top:1.6rem">
+      <div class="shot shot--wide" role="img"
+           aria-label="Placeholder for field-test screenshots from the detector windows.">
+        <div class="shot-note">
+          <p class="tag">Screen captures</p>
+          <p>Detector output from the field test: the drone boxed and labelled in the
+          event-camera view, and the frequency map showing the optical and acoustic
+          readings side by side.</p>
+        </div>
+      </div>
+      <figcaption>
+        <b>What the operator sees.</b> The live view marks the drone with a box carrying its
+        measured rhythm and rotation speed; the second window plots where every flickering
+        point sits on the frequency scale, with the microphones' bearing drawn over the top.
+      </figcaption>
+    </figure>
+  </section>
+
   <!-- ============ PILLAR 7 ============ -->
   <section>
     <p class="eyebrow">Pillar seven &middot; The honest part</p>
     <h2>What this does not yet prove</h2>
     <div class="col">
       <p class="lede">
-        Everything above was measured indoors, on a bench fan standing in for a drone, in
-        recordings around thirty seconds long. That matters, and the project documents its
-        failures as carefully as its successes.
+        The camera half has now been shown working on a real drone outdoors. The
+        cross-check between the two senses — the idea the whole project rests on — has
+        not yet been demonstrated in the field. That distinction matters, and the project
+        documents its failures as carefully as its successes.
       </p>
     </div>
 
     <ul class="limits">
       <li>
-        <b>No outdoor test, and no real drone yet.</b> A workshop is not a windy car park at
-        dusk. Until it has faced one, the results describe a promising method, not a finished product.
+        <b>The two senses have not yet agreed on a real drone.</b> Indoors, on a bench
+        source, the frequency cross-check works. Outdoors it has not run correctly even
+        once, because of the range setting described above. Until a corrected run shows both
+        channels landing on the same rhythm, the central claim rests on lab evidence only.
       </li>
       <li>
-        <b>The published range figures are estimates.</b> Distances of 50 to 150 metres are
-        calculated from the physics and the sensor's resolution — they have not been measured
-        in the field, and the paper says so plainly.
+        <b>One drone, one session, hovering.</b> A single hovering quadcopter over open
+        ground is not a windy perimeter at dusk, or a drone crossing at speed, or several at
+        once. It is a first data point, not a validation campaign.
+      </li>
+      <li>
+        <b>The published range figures are still estimates.</b> Distances of 50 to 150 metres
+        are calculated from the physics and the sensor's resolution. The field test confirmed
+        detection happens outdoors, but did not measure how far away it stops working.
       </li>
       <li>
         <b>Matching <em>direction</em> between the two sensors did not work.</b> Matching the
@@ -722,9 +795,10 @@
 
     <div class="col" style="margin-top:1.6rem">
       <p>
-        None of this undermines the core finding. The physics holds, the cross-check works, and
-        the detector is fast and quiet. What comes next is taking it outside and pointing it at
-        something that is actually flying.
+        None of this undermines the core finding. The physics holds, the detector is fast and
+        quiet, and it has now picked a real drone out of a cluttered outdoor scene. What comes
+        next is the corrected run — the microphones allowed to search where the drone actually
+        sits — so the two senses can finally be seen agreeing on something that is really flying.
       </p>
     </div>
   </section>
