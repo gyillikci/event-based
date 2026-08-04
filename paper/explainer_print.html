@@ -1,68 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Catching the Drone You Can't See — a plain-language guide</title>
-
 <style>
   :root {
-    color-scheme: light dark;
+    color-scheme: light;
 
-    /* Ground + ink — blue-biased neutrals, never flat grey */
-    --ground:      #0C121F;
-    --surface:     #151E31;
-    --surface-2:   #1C2740;
-    --rule:        #27314A;
-    --ink:         #D8DFEC;
-    --ink-strong:  #F2F5FA;
-    --ink-muted:   #8895AE;
+    --ground:      #FFFFFF;
+    --surface:     #FFFFFF;
+    --surface-2:   #F1F4F9;
+    --rule:        #C9D2E0;
+    --ink:         #232E46;
+    --ink-strong:  #0B1120;
+    --ink-muted:   #5C6880;
 
-    /* The two sensing channels — the thesis of the whole project */
-    --optical:     #F2B33D;   /* light / flicker */
-    --acoustic:    #9B8CF0;   /* sound / pressure */
-    --agree:       #46C58D;   /* both channels concur */
-    --reject:      #E4685E;   /* evidence in one channel only */
+    --optical:     #8A5B05;
+    --acoustic:    #4E3EB8;
+    --agree:       #126847;
+    --reject:      #AE3229;
 
-    --optical-dim: rgba(242,179,61,.14);
-    --acoustic-dim:rgba(155,140,240,.14);
-    --agree-dim:   rgba(70,197,141,.14);
+    --optical-dim: rgba(138,91,5,.10);
+    --acoustic-dim:rgba(78,62,184,.10);
+    --agree-dim:   rgba(18,104,71,.10);
 
     --serif: 'Iowan Old Style', 'Palatino Linotype', Palatino, 'Book Antiqua', Georgia, serif;
     --sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
     --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
 
     --measure: 62ch;
-    --pad: clamp(1.15rem, 4vw, 2rem);
+    --pad: 0rem;
   }
 
-  @media (prefers-color-scheme: light) {
-    :root {
-      --ground:     #F6F7FB;
-      --surface:    #FFFFFF;
-      --surface-2:  #EEF1F7;
-      --rule:       #D5DBE7;
-      --ink:        #26314A;
-      --ink-strong: #0D1424;
-      --ink-muted:  #64708A;
-      --optical:    #96650A;
-      --acoustic:   #5546C0;
-      --agree:      #157551;
-      --reject:     #BC3F36;
-      --optical-dim: rgba(150,101,10,.10);
-      --acoustic-dim:rgba(85,70,192,.10);
-      --agree-dim:   rgba(21,117,81,.10);
-    }
-  }
 
-  /* The viewer's toggle must win over the media query, in both directions */
-  :root[data-theme="light"] {
-    --ground:#F6F7FB; --surface:#FFFFFF; --surface-2:#EEF1F7; --rule:#D5DBE7;
-    --ink:#26314A; --ink-strong:#0D1424; --ink-muted:#64708A;
-    --optical:#96650A; --acoustic:#5546C0; --agree:#157551; --reject:#BC3F36;
-    --optical-dim:rgba(150,101,10,.10); --acoustic-dim:rgba(85,70,192,.10); --agree-dim:rgba(21,117,81,.10);
-  }
-  :root[data-theme="dark"] {
-    --ground:#0C121F; --surface:#151E31; --surface-2:#1C2740; --rule:#27314A;
-    --ink:#D8DFEC; --ink-strong:#F2F5FA; --ink-muted:#8895AE;
-    --optical:#F2B33D; --acoustic:#9B8CF0; --agree:#46C58D; --reject:#E4685E;
-    --optical-dim:rgba(242,179,61,.14); --acoustic-dim:rgba(155,140,240,.14); --agree-dim:rgba(70,197,141,.14);
-  }
 
   body {
     background: var(--ground);
@@ -248,16 +219,56 @@
   a { color: var(--acoustic); }
   a:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--optical); outline-offset: 3px; }
 
-  /* Screen-only entrance. Never applied to print: a paused animation would
-     leave the masthead stuck at opacity 0 in the rendered PDF. */
-  @media screen and (prefers-reduced-motion: no-preference) {
-    .masthead > * { animation: rise .55s cubic-bezier(.2,.7,.3,1) backwards; }
-    .masthead > *:nth-child(2) { animation-delay: .07s; }
-    .masthead > *:nth-child(3) { animation-delay: .14s; }
-    .masthead > *:nth-child(4) { animation-delay: .21s; }
-    @keyframes rise { from { opacity: 0; transform: translateY(10px); } }
+
+  /* ---------- Print / PDF ---------- */
+  @page { size: A4; margin: 15mm 15mm 14mm; }
+
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+  /* Nothing may depend on an animation finishing in order to be visible. */
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+    opacity: 1;
   }
+
+  body { font-size: 10.3pt; line-height: 1.54; background: #fff; }
+  .wrap { max-width: none; padding: 0; }
+  .col { max-width: 70ch; }
+
+  .masthead { padding: 0 0 1.2rem; }
+  h1 { font-size: 26pt; max-width: 18ch; margin-bottom: .8rem; }
+  .standfirst { font-size: 12pt; max-width: 54ch; }
+  .byline { margin-top: 1.1rem; padding-top: .9rem; }
+
+  section { padding: .95rem 0 .9rem; }
+  h2 { font-size: 15pt; margin: .25rem 0 .55rem; max-width: 30ch; }
+  h3 { font-size: 10.5pt; }
+  h1, h2, h3 { break-after: avoid; }
+  .eyebrow { font-size: 7.5pt; margin-bottom: .6rem; break-after: avoid; }
+  p { orphans: 3; widows: 3; }
+
+  /* Keep every self-contained visual whole on one page. */
+  figure, .channel, .stat, ol.journey li, blockquote, .readout, .channels {
+    break-inside: avoid;
+  }
+  figure { margin: 1rem 0 .9rem; padding: .75rem; overflow: visible; }
+  figure svg { min-width: 0; }
+  figcaption { font-size: 8.7pt; margin-top: .8rem; padding-top: .7rem; }
+
+  blockquote { font-size: 13.5pt; margin: 1rem 0; }
+  .stat { padding: .85rem .9rem; }
+  .stat .n { font-size: 14.5pt; }
+  .stat .k { font-size: 8.3pt; }
+  .channel { padding: 1rem; }
+  .channel p, ol.journey p, ul.limits li { font-size: 9.8pt; }
+  ol.journey li { padding: .8rem 0; }
+  ul.limits li { padding: .7rem 0 .7rem 1.5rem; }
+  footer { margin-top: 1.4rem; padding-top: 1.1rem; font-size: 8.2pt; }
+
 </style>
+</head>
+<body>
 
 <div class="wrap">
 
@@ -666,3 +677,6 @@
   </footer>
 
 </div>
+
+</body>
+</html>
