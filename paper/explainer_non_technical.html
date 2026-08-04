@@ -1,0 +1,665 @@
+<title>Catching the Drone You Can't See — a plain-language guide</title>
+
+<style>
+  :root {
+    color-scheme: light dark;
+
+    /* Ground + ink — blue-biased neutrals, never flat grey */
+    --ground:      #0C121F;
+    --surface:     #151E31;
+    --surface-2:   #1C2740;
+    --rule:        #27314A;
+    --ink:         #D8DFEC;
+    --ink-strong:  #F2F5FA;
+    --ink-muted:   #8895AE;
+
+    /* The two sensing channels — the thesis of the whole project */
+    --optical:     #F2B33D;   /* light / flicker */
+    --acoustic:    #9B8CF0;   /* sound / pressure */
+    --agree:       #46C58D;   /* both channels concur */
+    --reject:      #E4685E;   /* evidence in one channel only */
+
+    --optical-dim: rgba(242,179,61,.14);
+    --acoustic-dim:rgba(155,140,240,.14);
+    --agree-dim:   rgba(70,197,141,.14);
+
+    --serif: 'Iowan Old Style', 'Palatino Linotype', Palatino, 'Book Antiqua', Georgia, serif;
+    --sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+
+    --measure: 62ch;
+    --pad: clamp(1.15rem, 4vw, 2rem);
+  }
+
+  @media (prefers-color-scheme: light) {
+    :root {
+      --ground:     #F6F7FB;
+      --surface:    #FFFFFF;
+      --surface-2:  #EEF1F7;
+      --rule:       #D5DBE7;
+      --ink:        #26314A;
+      --ink-strong: #0D1424;
+      --ink-muted:  #64708A;
+      --optical:    #96650A;
+      --acoustic:   #5546C0;
+      --agree:      #157551;
+      --reject:     #BC3F36;
+      --optical-dim: rgba(150,101,10,.10);
+      --acoustic-dim:rgba(85,70,192,.10);
+      --agree-dim:   rgba(21,117,81,.10);
+    }
+  }
+
+  /* The viewer's toggle must win over the media query, in both directions */
+  :root[data-theme="light"] {
+    --ground:#F6F7FB; --surface:#FFFFFF; --surface-2:#EEF1F7; --rule:#D5DBE7;
+    --ink:#26314A; --ink-strong:#0D1424; --ink-muted:#64708A;
+    --optical:#96650A; --acoustic:#5546C0; --agree:#157551; --reject:#BC3F36;
+    --optical-dim:rgba(150,101,10,.10); --acoustic-dim:rgba(85,70,192,.10); --agree-dim:rgba(21,117,81,.10);
+  }
+  :root[data-theme="dark"] {
+    --ground:#0C121F; --surface:#151E31; --surface-2:#1C2740; --rule:#27314A;
+    --ink:#D8DFEC; --ink-strong:#F2F5FA; --ink-muted:#8895AE;
+    --optical:#F2B33D; --acoustic:#9B8CF0; --agree:#46C58D; --reject:#E4685E;
+    --optical-dim:rgba(242,179,61,.14); --acoustic-dim:rgba(155,140,240,.14); --agree-dim:rgba(70,197,141,.14);
+  }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: clamp(1rem, 0.97rem + 0.16vw, 1.08rem);
+    line-height: 1.68;
+    margin: 0;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 74rem; margin: 0 auto; padding: 0 var(--pad) 5rem; }
+  .col  { max-width: var(--measure); }
+
+  /* ---------- Masthead ---------- */
+  .masthead { padding: clamp(3rem, 9vw, 6rem) 0 clamp(2rem, 5vw, 3.5rem); }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: .72rem;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+    margin: 0 0 1.4rem;
+  }
+  h1 {
+    font-family: var(--serif);
+    font-weight: 600;
+    font-size: clamp(2.1rem, 1.3rem + 3.9vw, 4rem);
+    line-height: 1.08;
+    letter-spacing: -0.015em;
+    text-wrap: balance;
+    color: var(--ink-strong);
+    margin: 0 0 1.2rem;
+    max-width: 20ch;
+  }
+  .standfirst {
+    font-family: var(--serif);
+    font-size: clamp(1.12rem, 1rem + 0.5vw, 1.42rem);
+    line-height: 1.5;
+    color: var(--ink);
+    max-width: 46ch;
+    margin: 0;
+  }
+  .byline {
+    font-family: var(--mono); font-size: .78rem; color: var(--ink-muted);
+    margin-top: 2.4rem; padding-top: 1.1rem; border-top: 1px solid var(--rule);
+    max-width: 46ch;
+  }
+
+  /* ---------- Sections ---------- */
+  section { padding: clamp(2.2rem, 5vw, 3.4rem) 0; border-top: 1px solid var(--rule); }
+  h2 {
+    font-family: var(--serif);
+    font-weight: 600;
+    font-size: clamp(1.5rem, 1.15rem + 1.5vw, 2.1rem);
+    line-height: 1.2;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+    color: var(--ink-strong);
+    margin: .45rem 0 1rem;
+    max-width: 24ch;
+  }
+  h3 {
+    font-family: var(--sans);
+    font-size: 1rem; font-weight: 650;
+    letter-spacing: .005em;
+    color: var(--ink-strong);
+    margin: 0 0 .45rem;
+  }
+  p { margin: 0 0 1.05rem; }
+  p:last-child { margin-bottom: 0; }
+  strong { color: var(--ink-strong); font-weight: 620; }
+
+  .lede { font-size: 1.08em; }
+
+  /* ---------- Pull quote ---------- */
+  blockquote {
+    margin: 1.8rem 0;
+    padding: 0 0 0 1.3rem;
+    border-left: 2px solid var(--optical);
+    font-family: var(--serif);
+    font-size: clamp(1.15rem, 1rem + 0.7vw, 1.5rem);
+    line-height: 1.42;
+    color: var(--ink-strong);
+    max-width: 34ch;
+  }
+  blockquote cite {
+    display: block; margin-top: .7rem;
+    font-family: var(--mono); font-size: .72rem; font-style: normal;
+    letter-spacing: .1em; text-transform: uppercase; color: var(--ink-muted);
+  }
+
+  /* ---------- Figures ---------- */
+  figure {
+    margin: 2rem 0 1.6rem;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: clamp(1rem, 3vw, 1.9rem);
+    overflow-x: auto;
+  }
+  figure svg { display: block; width: 100%; max-width: 100%; height: auto; min-width: 30rem; }
+  figcaption {
+    margin-top: 1.1rem; padding-top: .85rem; border-top: 1px solid var(--rule);
+    font-size: .88rem; color: var(--ink-muted); line-height: 1.55; max-width: 60ch;
+  }
+
+  /* ---------- Two-channel cards ---------- */
+  .channels { display: grid; gap: 1rem; grid-template-columns: 1fr; margin: 1.8rem 0; }
+  @media (min-width: 46rem) { .channels { grid-template-columns: 1fr 1fr; } }
+  .channel { border: 1px solid var(--rule); border-radius: 3px; padding: 1.3rem; background: var(--surface); }
+  .channel--optical  { border-top: 2px solid var(--optical); }
+  .channel--acoustic { border-top: 2px solid var(--acoustic); }
+  .channel .tag {
+    font-family: var(--mono); font-size: .68rem; letter-spacing: .14em;
+    text-transform: uppercase; margin: 0 0 .7rem;
+  }
+  .channel--optical  .tag { color: var(--optical); }
+  .channel--acoustic .tag { color: var(--acoustic); }
+  .channel p { font-size: .95rem; margin-bottom: .8rem; }
+  .channel dl { margin: .9rem 0 0; padding-top: .8rem; border-top: 1px solid var(--rule); font-size: .87rem; }
+  .channel div.row { display: flex; justify-content: space-between; gap: 1rem; padding: .22rem 0; }
+  .channel dt { color: var(--ink-muted); margin: 0; }
+  .channel dd { margin: 0; font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--ink-strong); text-align: right; }
+
+  /* ---------- Readout strip ---------- */
+  .readout {
+    display: grid; gap: 1px; background: var(--rule);
+    border: 1px solid var(--rule); border-radius: 3px; overflow: hidden;
+    grid-template-columns: 1fr 1fr; margin: 1.8rem 0;
+  }
+  @media (min-width: 52rem) { .readout { grid-template-columns: repeat(4, 1fr); } }
+  .stat { background: var(--surface); padding: 1.15rem 1.1rem; }
+  .stat .n {
+    font-family: var(--mono); font-variant-numeric: tabular-nums;
+    font-size: clamp(1.3rem, 1.05rem + 1vw, 1.75rem);
+    color: var(--agree); line-height: 1.1; display: block;
+  }
+  .stat .k {
+    font-size: .78rem; color: var(--ink-muted); margin-top: .5rem; display: block; line-height: 1.4;
+  }
+
+  /* ---------- Journey (a genuine sequence, so it is numbered) ---------- */
+  ol.journey { list-style: none; margin: 1.6rem 0 0; padding: 0; counter-reset: step; }
+  ol.journey li {
+    counter-increment: step;
+    display: grid; grid-template-columns: 2.6rem 1fr; gap: 1rem;
+    padding: 1rem 0; border-top: 1px solid var(--rule);
+  }
+  ol.journey li:first-child { border-top: none; padding-top: 0; }
+  ol.journey li::before {
+    content: counter(step);
+    font-family: var(--mono); font-size: .8rem; color: var(--ink-muted);
+    padding-top: .15rem;
+  }
+  ol.journey .verdict {
+    font-family: var(--mono); font-size: .68rem; letter-spacing: .12em;
+    text-transform: uppercase; display: inline-block; margin-left: .6rem;
+    padding: .12rem .45rem; border-radius: 2px; vertical-align: .08em;
+  }
+  .v-fail { color: var(--reject); background: rgba(228,104,94,.12); }
+  .v-win  { color: var(--agree);  background: var(--agree-dim); }
+  ol.journey p { font-size: .93rem; margin: .3rem 0 0; color: var(--ink); }
+
+  /* ---------- Honest-limits list ---------- */
+  ul.limits { list-style: none; margin: 1.4rem 0 0; padding: 0; }
+  ul.limits li {
+    padding: .85rem 0 .85rem 1.5rem; border-top: 1px solid var(--rule);
+    position: relative; font-size: .95rem;
+  }
+  ul.limits li::before {
+    content: ""; position: absolute; left: 0; top: 1.42rem;
+    width: .5rem; height: 1px; background: var(--reject);
+  }
+  ul.limits li:first-child { border-top: none; }
+  ul.limits b { color: var(--ink-strong); font-weight: 620; }
+
+  footer {
+    border-top: 1px solid var(--rule); margin-top: 3rem; padding-top: 1.6rem;
+    font-family: var(--mono); font-size: .76rem; color: var(--ink-muted); line-height: 1.7;
+  }
+
+  a { color: var(--acoustic); }
+  a:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--optical); outline-offset: 3px; }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .masthead > * { animation: rise .55s cubic-bezier(.2,.7,.3,1) backwards; }
+    .masthead > *:nth-child(2) { animation-delay: .07s; }
+    .masthead > *:nth-child(3) { animation-delay: .14s; }
+    .masthead > *:nth-child(4) { animation-delay: .21s; }
+    @keyframes rise { from { opacity: 0; transform: translateY(10px); } }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <p class="eyebrow">Research explainer &middot; no technical background needed</p>
+    <h1>Catching the drone you can't see</h1>
+    <p class="standfirst">
+      Most drone detectors listen for a radio signal. A drone flying a pre-programmed
+      route doesn't send one. This project asks a different question — not
+      <em>what is the drone saying</em>, but <em>what can its propellers not hide?</em>
+    </p>
+    <p class="byline">
+      Giray Yillikci &middot; İsa Özyıldırım<br>
+      A plain-language companion to the technical paper.
+    </p>
+  </header>
+
+  <!-- ============ PILLAR 1 ============ -->
+  <section>
+    <p class="eyebrow">Pillar one &middot; The problem</p>
+    <h2>The drones nobody is watching</h2>
+    <div class="col">
+      <p class="lede">
+        In 2018, drone sightings shut down Gatwick Airport. Around a thousand flights were
+        diverted and 140,000 passengers were stranded. Prisons, power stations and stadiums
+        face smaller versions of the same problem constantly.
+      </p>
+      <p>
+        The standard defence is to scan for the radio chatter between a drone and its pilot.
+        That works — right up until the drone doesn't have a pilot. A modern consumer drone can
+        be handed a route in advance and fly it with its radio switched off entirely. To a
+        radio scanner, it simply isn't there.
+      </p>
+      <p>
+        The alternatives each have their own blind spot. Radar struggles to tell a small drone
+        from a bird. Ordinary cameras take about thirty snapshots a second, which turns a
+        spinning propeller into a smear, and they go blind at dusk or in fog. Microphones alone
+        are jumpy — roughly one alarm in five is a lorry, an air conditioner or a gust of wind.
+      </p>
+      <p>
+        There's a legal squeeze too. In most countries only a handful of agencies may lawfully
+        jam or shoot down a drone. Everyone else — airports, prisons, security teams — is
+        allowed to do exactly one thing: <strong>detect</strong>. That makes reliable, passive
+        detection the whole game.
+      </p>
+    </div>
+  </section>
+
+  <!-- ============ PILLAR 2 ============ -->
+  <section>
+    <p class="eyebrow">Pillar two &middot; The idea</p>
+    <h2>A propeller cannot hide</h2>
+    <div class="col">
+      <p class="lede">
+        A drone can switch off its radio. It can be painted matte black. It cannot stop
+        spinning its propellers — that is the only thing keeping it in the air.
+      </p>
+      <p>
+        And a spinning propeller does two things at once, every single time a blade goes past.
+        It <strong>chops the light</strong> behind it, creating a flicker. And it
+        <strong>pushes the air</strong>, creating a pulse of sound. Both happen at exactly the
+        same rate — a few hundred times per second for a typical drone.
+      </p>
+      <p>
+        Engineers call that rate the <em>blade-pass frequency</em>. The useful part is that it
+        is one physical event showing up in two completely separate places: something you could
+        see, and something you could hear. Think of an idling car — you can watch the bonnet
+        tremble and hear the engine hum, and both are the same pistons doing the same work.
+      </p>
+      <p>
+        So the system doesn't look for a drone's shape, or its colour, or its radio. It looks
+        for that rhythm, in both places at once.
+      </p>
+    </div>
+
+    <figure>
+      <svg viewBox="0 0 760 250" role="img"
+           aria-label="One propeller emits a light flicker and a sound pulse at the same rate; an event camera and a microphone array each measure that rate independently, and the system confirms a drone only when the two measurements agree.">
+        <defs>
+          <marker id="ar-o" viewBox="0 0 10 10" refX="9" refY="5"
+                  markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <polygon points="0,1 9,5 0,9" style="fill: var(--optical)"/>
+          </marker>
+          <marker id="ar-a" viewBox="0 0 10 10" refX="9" refY="5"
+                  markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <polygon points="0,1 9,5 0,9" style="fill: var(--acoustic)"/>
+          </marker>
+        </defs>
+
+        <!-- Source -->
+        <circle cx="66" cy="125" r="30" fill="none" stroke="currentColor" stroke-width="1.5" opacity=".55"/>
+        <line x1="66" y1="125" x2="66" y2="99"  stroke="currentColor" stroke-width="3"/>
+        <line x1="66" y1="125" x2="88" y2="138" stroke="currentColor" stroke-width="3"/>
+        <line x1="66" y1="125" x2="44" y2="138" stroke="currentColor" stroke-width="3"/>
+        <text x="66" y="182" text-anchor="middle" font-size="12.5" fill="currentColor">Spinning propeller</text>
+        <text x="66" y="199" text-anchor="middle" font-size="11" fill="currentColor" opacity=".62">180 turns of a blade/sec</text>
+
+        <!-- Optical path -->
+        <path d="M104 108 L104 62 L232 62" fill="none" style="stroke: var(--optical)"
+              stroke-width="1.6" marker-end="url(#ar-o)"/>
+        <text x="140" y="52" font-size="11.5" style="fill: var(--optical)">chops the light &rarr; flicker</text>
+        <rect x="238" y="38" width="168" height="48" rx="2" fill="none"
+              style="stroke: var(--optical)" stroke-width="1.4"/>
+        <text x="322" y="58" text-anchor="middle" font-size="12.5" fill="currentColor">Event camera</text>
+        <text x="322" y="75" text-anchor="middle" font-size="11" fill="currentColor" opacity=".62">measures the flicker rate</text>
+
+        <!-- Acoustic path -->
+        <path d="M104 142 L104 188 L232 188" fill="none" style="stroke: var(--acoustic)"
+              stroke-width="1.6" marker-end="url(#ar-a)"/>
+        <text x="140" y="207" font-size="11.5" style="fill: var(--acoustic)">pushes the air &rarr; sound pulse</text>
+        <rect x="238" y="164" width="168" height="48" rx="2" fill="none"
+              style="stroke: var(--acoustic)" stroke-width="1.4"/>
+        <text x="322" y="184" text-anchor="middle" font-size="12.5" fill="currentColor">4 microphones</text>
+        <text x="322" y="201" text-anchor="middle" font-size="11" fill="currentColor" opacity=".62">measures the pulse rate</text>
+
+        <!-- Converge -->
+        <path d="M406 62 L470 62 L470 112" fill="none" style="stroke: var(--optical)"
+              stroke-width="1.6" marker-end="url(#ar-o)"/>
+        <path d="M406 188 L470 188 L470 138" fill="none" style="stroke: var(--acoustic)"
+              stroke-width="1.6" marker-end="url(#ar-a)"/>
+        <text x="484" y="118" font-size="11.5" style="fill: var(--optical)">180/sec</text>
+        <text x="484" y="146" font-size="11.5" style="fill: var(--acoustic)">180/sec</text>
+
+        <rect x="516" y="101" width="106" height="48" rx="2" fill="none"
+              stroke="currentColor" stroke-width="1.4" opacity=".65"/>
+        <text x="569" y="121" text-anchor="middle" font-size="12.5" fill="currentColor">Same rate?</text>
+        <text x="569" y="138" text-anchor="middle" font-size="11" fill="currentColor" opacity=".62">compare the two</text>
+
+        <line x1="622" y1="125" x2="662" y2="125" style="stroke: var(--agree)" stroke-width="1.8"/>
+        <polygon points="660,120 670,125 660,130" style="fill: var(--agree)"/>
+        <rect x="672" y="103" width="80" height="44" rx="2"
+              style="stroke: var(--agree); fill: var(--agree-dim)" stroke-width="1.5"/>
+        <text x="712" y="122" text-anchor="middle" font-size="12" style="fill: var(--agree)">Drone</text>
+        <text x="712" y="137" text-anchor="middle" font-size="12" style="fill: var(--agree)">confirmed</text>
+      </svg>
+      <figcaption>
+        One physical cause, two independent measurements. The propeller's blade rate reaches the
+        two sensors by completely different physics — light and air pressure — so the system can
+        require both to report the same number before it raises an alarm.
+      </figcaption>
+    </figure>
+  </section>
+
+  <!-- ============ PILLAR 3 ============ -->
+  <section>
+    <p class="eyebrow">Pillar three &middot; The instruments</p>
+    <h2>Two senses, one of them unusual</h2>
+    <div class="col">
+      <p class="lede">
+        The microphone side is ordinary enough. The camera is not — and it's the reason the
+        idea works at all.
+      </p>
+      <p>
+        An ordinary camera is a flipbook: it captures a full picture thirty times a second,
+        whether or not anything changed. A propeller turning hundreds of times a second is far
+        too fast for that; it arrives as a blur.
+      </p>
+      <p>
+        An <strong>event camera</strong> works the way an eye does. It has no shutter and takes
+        no photographs. Each pixel sits watching its own tiny patch of the world and calls out
+        the instant its brightness changes — independently of every other pixel, millions of
+        times a second. Nothing moving means nothing reported, so a camera pointed at empty sky
+        stays almost silent until something happens in it.
+      </p>
+    </div>
+
+    <div class="channels">
+      <div class="channel channel--optical">
+        <p class="tag">The eye &middot; event camera</p>
+        <h3>Sees rhythm, not pictures</h3>
+        <p>
+          Because every pixel reports on its own schedule, the camera can follow a flicker
+          hundreds of times per second and never blurs it. It also copes with light levels
+          from near-darkness to direct sun — a range an ordinary camera cannot survive.
+        </p>
+        <dl>
+          <div class="row"><dt>Reaction time</dt><dd>~1 millionth s</dd></div>
+          <div class="row"><dt>Light range</dt><dd>moonlight → sun</dd></div>
+          <div class="row"><dt>Motion blur</dt><dd>none</dd></div>
+        </dl>
+      </div>
+      <div class="channel channel--acoustic">
+        <p class="tag">The ear &middot; microphone ring</p>
+        <h3>Hears pitch and direction</h3>
+        <p>
+          Four small microphones in a ring the size of a coaster. Comparing when a sound
+          reaches one microphone versus another gives a rough bearing, and the propeller's
+          steady pitch stands out from broadband background noise.
+        </p>
+        <dl>
+          <div class="row"><dt>Microphones</dt><dd>4, in a ring</dd></div>
+          <div class="row"><dt>Gives bearing</dt><dd>yes, ±10°</dd></div>
+          <div class="row"><dt>Gives height</dt><dd>no</dd></div>
+        </dl>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ PILLAR 4 ============ -->
+  <section>
+    <p class="eyebrow">Pillar four &middot; The cross-check</p>
+    <h2>Why the false alarms die</h2>
+    <div class="col">
+      <p class="lede">
+        This is the heart of it. Plenty of ordinary things flicker. Plenty of ordinary things
+        hum. Almost nothing does both, in step, at the same rate.
+      </p>
+      <p>
+        A failing fluorescent tube flickers beautifully — and makes no sound at that rate. A
+        generator hums — and doesn't flicker. Wind roars — with no steady pitch at all. Each of
+        those can fool a single sensor, which is exactly why microphone-only systems cry wolf so
+        often.
+      </p>
+      <p>
+        Requiring the two channels to <em>agree</em> throws all of them out at once. The system
+        also allows for one sensor reporting double or triple the other's rate, which happens
+        naturally depending on how many blades a propeller has.
+      </p>
+    </div>
+
+    <figure>
+      <svg viewBox="0 0 700 232" role="img"
+           aria-label="Comparison of three sources: a propeller produces both a light flicker and a matching sound, so it is confirmed; a flickering lamp produces light only and a generator produces sound only, so both are rejected.">
+        <!-- Column headers -->
+        <text x="196" y="22" text-anchor="middle" font-size="11" style="fill: var(--optical)">SEEN (flicker)</text>
+        <text x="352" y="22" text-anchor="middle" font-size="11" style="fill: var(--acoustic)">HEARD (pitch)</text>
+        <text x="530" y="22" text-anchor="middle" font-size="11" fill="currentColor" opacity=".6">AGREE?</text>
+        <line x1="16" y1="34" x2="684" y2="34" stroke="currentColor" stroke-width="1" opacity=".25"/>
+
+        <!-- Row 1: propeller -->
+        <text x="16" y="70" font-size="12.5" fill="currentColor">Drone propeller</text>
+        <rect x="132" y="54" width="128" height="24" rx="2" style="fill: var(--optical-dim); stroke: var(--optical)" stroke-width="1"/>
+        <text x="196" y="71" text-anchor="middle" font-size="11.5" style="fill: var(--optical)">180 / sec</text>
+        <rect x="288" y="54" width="128" height="24" rx="2" style="fill: var(--acoustic-dim); stroke: var(--acoustic)" stroke-width="1"/>
+        <text x="352" y="71" text-anchor="middle" font-size="11.5" style="fill: var(--acoustic)">180 / sec</text>
+        <rect x="452" y="54" width="156" height="24" rx="2" style="fill: var(--agree-dim); stroke: var(--agree)" stroke-width="1.2"/>
+        <text x="530" y="71" text-anchor="middle" font-size="11.5" style="fill: var(--agree)">match &rarr; DRONE</text>
+
+        <line x1="16" y1="98" x2="684" y2="98" stroke="currentColor" stroke-width="1" opacity=".16"/>
+
+        <!-- Row 2: lamp -->
+        <text x="16" y="134" font-size="12.5" fill="currentColor">Flickering lamp</text>
+        <rect x="132" y="118" width="128" height="24" rx="2" style="fill: var(--optical-dim); stroke: var(--optical)" stroke-width="1"/>
+        <text x="196" y="135" text-anchor="middle" font-size="11.5" style="fill: var(--optical)">100 / sec</text>
+        <rect x="288" y="118" width="128" height="24" rx="2" fill="none" stroke="currentColor" stroke-width="1" stroke-dasharray="3 3" opacity=".4"/>
+        <text x="352" y="135" text-anchor="middle" font-size="11.5" fill="currentColor" opacity=".5">silent</text>
+        <rect x="452" y="118" width="156" height="24" rx="2" fill="none" style="stroke: var(--reject)" stroke-width="1.2"/>
+        <text x="530" y="135" text-anchor="middle" font-size="11.5" style="fill: var(--reject)">no match &rarr; ignored</text>
+
+        <line x1="16" y1="162" x2="684" y2="162" stroke="currentColor" stroke-width="1" opacity=".16"/>
+
+        <!-- Row 3: generator -->
+        <text x="16" y="198" font-size="12.5" fill="currentColor">Generator / traffic</text>
+        <rect x="132" y="182" width="128" height="24" rx="2" fill="none" stroke="currentColor" stroke-width="1" stroke-dasharray="3 3" opacity=".4"/>
+        <text x="196" y="199" text-anchor="middle" font-size="11.5" fill="currentColor" opacity=".5">no flicker</text>
+        <rect x="288" y="182" width="128" height="24" rx="2" style="fill: var(--acoustic-dim); stroke: var(--acoustic)" stroke-width="1"/>
+        <text x="352" y="199" text-anchor="middle" font-size="11.5" style="fill: var(--acoustic)">160 / sec</text>
+        <rect x="452" y="182" width="156" height="24" rx="2" fill="none" style="stroke: var(--reject)" stroke-width="1.2"/>
+        <text x="530" y="199" text-anchor="middle" font-size="11.5" style="fill: var(--reject)">no match &rarr; ignored</text>
+      </svg>
+      <figcaption>
+        The everyday things that fool a single-sensor system appear in only one column. Demanding
+        evidence in both is what turns a jumpy detector into a quiet one.
+      </figcaption>
+    </figure>
+  </section>
+
+  <!-- ============ PILLAR 5 ============ -->
+  <section>
+    <p class="eyebrow">Pillar five &middot; The lesson</p>
+    <h2>The right design beat endless tuning</h2>
+    <div class="col">
+      <p class="lede">
+        The most useful finding of the project wasn't about drones at all. It was about how the
+        first version failed — and why no amount of adjustment could save it.
+      </p>
+    </div>
+
+    <ol class="journey">
+      <li>
+        <div>
+          <h3>Split the image into a grid<span class="verdict v-fail">failed</span></h3>
+          <p>
+            The first design carved the camera's view into a chequerboard and looked for a
+            rhythm inside each square. It worked — but only with the propeller a few
+            centimetres from the lens. Further away, the handful of pixels showing the
+            propeller were swamped by the hundreds of empty pixels sharing their square.
+          </p>
+        </div>
+      </li>
+      <li>
+        <div>
+          <h3>Turn up the sensitivity<span class="verdict v-fail">failed worse</span></h3>
+          <p>
+            The obvious response was to loosen every threshold. The result was 25 to 43
+            phantom "propellers" in every single frame. Lowering the bar didn't reveal
+            faint drones; it just promoted background noise into confident false alarms.
+          </p>
+        </div>
+      </li>
+      <li>
+        <div>
+          <h3>Rebuild the approach<span class="verdict v-win">worked immediately</span></h3>
+          <p>
+            Instead of a fixed grid, measure the rhythm of <em>every pixel</em>, then group
+            neighbouring pixels that agree with each other. The grouping follows the
+            propeller's actual shape, so nothing gets diluted. The very first run locked onto
+            a single steady propeller and held it for the whole recording.
+          </p>
+        </div>
+      </li>
+    </ol>
+
+    <blockquote>
+      Tuning cannot repair a design that is wrong in the first place.
+      <cite>The project's central engineering finding</cite>
+    </blockquote>
+
+    <div class="col">
+      <p>
+        A second experiment sharpened the point. Allowing a <em>single</em> flickering pixel to
+        count as evidence produced 13 to 17 false detections per frame. Requiring just
+        <strong>two neighbouring pixels</strong> to agree brought that to zero. One pixel is
+        indistinguishable from sensor noise; two that agree with each other are a real object.
+        That single rule does most of the work of keeping the system quiet.
+      </p>
+    </div>
+  </section>
+
+  <!-- ============ PILLAR 6 ============ -->
+  <section>
+    <p class="eyebrow">Pillar six &middot; What exists</p>
+    <h2>A working prototype, and what it measures</h2>
+
+    <div class="readout">
+      <div class="stat"><span class="n">~100 ms</span><span class="k">to first detection — about a third of a blink</span></div>
+      <div class="stat"><span class="n">5,400</span><span class="k">propeller RPM, read correctly off the flicker</span></div>
+      <div class="stat"><span class="n">0</span><span class="k">false alarms across the lab recordings</span></div>
+      <div class="stat"><span class="n">0.63 ms</span><span class="k">to analyse one frame after the rewrite</span></div>
+    </div>
+
+    <div class="col">
+      <p>
+        The system runs live, watches a propeller, reports its speed in revolutions per minute,
+        and raises a confirmed detection in about a tenth of a second. It grows more confident
+        the longer it keeps seeing the same thing, and quietly forgets what stops appearing —
+        so a brief glitch fades instead of latching on as an alarm.
+      </p>
+      <p>
+        It was first built in Python to get the ideas right, then rewritten in C++ so that each
+        frame takes a predictable amount of time rather than occasionally stalling. For
+        something meant to run unattended for months, steady and boring is the goal.
+      </p>
+    </div>
+  </section>
+
+  <!-- ============ PILLAR 7 ============ -->
+  <section>
+    <p class="eyebrow">Pillar seven &middot; The honest part</p>
+    <h2>What this does not yet prove</h2>
+    <div class="col">
+      <p class="lede">
+        Everything above was measured indoors, on a bench fan standing in for a drone, in
+        recordings around thirty seconds long. That matters, and the project documents its
+        failures as carefully as its successes.
+      </p>
+    </div>
+
+    <ul class="limits">
+      <li>
+        <b>No outdoor test, and no real drone yet.</b> A workshop is not a windy car park at
+        dusk. Until it has faced one, the results describe a promising method, not a finished product.
+      </li>
+      <li>
+        <b>The published range figures are estimates.</b> Distances of 50 to 150 metres are
+        calculated from the physics and the sensor's resolution — they have not been measured
+        in the field, and the paper says so plainly.
+      </li>
+      <li>
+        <b>Matching <em>direction</em> between the two sensors did not work.</b> Matching the
+        rhythm works reliably. Getting the camera and the microphones to agree on <em>where</em>
+        the source was did not: in an indoor room the microphones barely registered any swing
+        while the camera swept across 25 degrees. Reflections off the walls are the likely
+        culprit. It is reported as a genuine negative result rather than quietly dropped.
+      </li>
+      <li>
+        <b>Only one target at a time.</b> The system currently assumes a single source. Several
+        drones at once, at similar speeds, would need more work.
+      </li>
+    </ul>
+
+    <div class="col" style="margin-top:1.6rem">
+      <p>
+        None of this undermines the core finding. The physics holds, the cross-check works, and
+        the detector is fast and quiet. What comes next is taking it outside and pointing it at
+        something that is actually flying.
+      </p>
+    </div>
+  </section>
+
+  <footer>
+    Companion to “Passive RF-Silent Drone Detection via Neuromorphic Vision and Acoustic
+    Fusion of the Propeller Blade-Pass Frequency.”<br>
+    Every figure here is drawn from measurements recorded in the project's own logs.
+  </footer>
+
+</div>
