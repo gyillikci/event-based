@@ -715,20 +715,23 @@
 
     <div class="col">
       <p>
-        <strong>The cross-check did not fire</strong> — and the reason turned out to be a
-        setting, not the physics. The microphone side had been left searching a narrow band
-        of pitches from 140 to 200 cycles per second, chosen back when the test source was a
-        bench fan. The real drone sits at about 106. Its true pitch was therefore
-        <em>outside the range the ear was allowed to look in</em>, so the microphones locked
-        onto whatever else they could find in that window while the camera was looking at the
-        drone itself. The same range setting also governs the combining step, which then
-        treated the camera's perfectly good reading as out-of-bounds evidence and pushed its
-        confidence down rather than up.
+        <strong>The two senses were not looking at the same thing.</strong> The microphone
+        side had been left searching a narrow band of pitches, 140 to 200 cycles per second,
+        chosen back when the test source was a bench fan. The real drone sits at about 106 —
+        <em>below the range the ear was allowed to search in</em>. So while the camera was
+        measuring the drone's own rhythm, the microphones were confined to a window that
+        could not contain it, and reported whatever else they found there. Widening that
+        window is a one-line correction, and it is exactly the kind of thing a first field
+        test exists to surface.
       </p>
       <p>
-        That is a one-line correction — widen the band the microphones are allowed to search
-        so it covers where this drone actually sits — and it is exactly the kind of thing a
-        first field test exists to surface.
+        <strong>Whether the combined verdict fires is still unknown.</strong> In the one
+        moment captured where the overall confidence is legible, the camera had no confirmed
+        track at all and the microphones' bearing was wandering too widely to be trusted — so
+        the system correctly had nothing to act on and sat at zero. That is the detector
+        behaving as designed, not failing. No capture yet shows the combined verdict at the
+        instant the camera was actually holding the drone, so the honest answer is that the
+        cross-check has not been observed either succeeding or failing in the field.
       </p>
     </div>
 
@@ -765,10 +768,19 @@
 
     <ul class="limits">
       <li>
-        <b>The two senses have not yet agreed on a real drone.</b> Indoors, on a bench
-        source, the frequency cross-check works. Outdoors it has not run correctly even
-        once, because of the range setting described above. Until a corrected run shows both
-        channels landing on the same rhythm, the central claim rests on lab evidence only.
+        <b>The two senses have not yet been seen agreeing on a real drone.</b> Indoors, on a
+        bench source, the frequency cross-check works. Outdoors it has not been observed
+        running properly even once — the microphones were searching a band that could not
+        contain the drone's pitch. Until a corrected run shows both channels landing on the
+        same rhythm, the central claim rests on lab evidence only.
+      </li>
+      <li>
+        <b>The agreement test is looser than it looks.</b> Because it accepts a match on any
+        harmonic up to the fourth, within five per cent, two entirely unrelated pitches
+        coincide surprisingly often — in simulation, about a third of random pairs pass. The
+        test still carries real weight when both sensors are locked onto the same machine,
+        but it is not the near-impossible coincidence the simple description suggests, and
+        tightening it is on the list.
       </li>
       <li>
         <b>One drone, one session, hovering.</b> A single hovering quadcopter over open
