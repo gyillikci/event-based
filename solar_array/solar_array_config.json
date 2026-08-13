@@ -1,0 +1,123 @@
+{
+  "_comment": "IAC 2026 - event-based vibration monitoring of flexible solar arrays through orbital sunrise. Values marked CITE-REQUIRED are model placeholders and must be replaced with sourced figures before publication.",
+
+  "sensor": {
+    "_comment": "Prophesee EVK4 / Sony IMX636. CITE-REQUIRED: dynamic range, peak event rate.",
+    "width": 1280,
+    "height": 720,
+    "dynamic_range_db": 120.0,
+    "contrast_threshold_on": 0.20,
+    "contrast_threshold_off": 0.20,
+    "threshold_mismatch_std": 0.15,
+    "refractory_period_us": 100.0,
+    "leak_rate_hz": 0.01,
+    "shot_noise_rate_hz": 0.05,
+    "readout_limit_evs_full_frame": 1.0e8
+  },
+
+  "illumination": {
+    "solar_irradiance_w_m2": 1361.0,
+    "eclipse_irradiance_w_m2": 0.014,
+    "t_first_contact_s": 6.0,
+    "rise_duration_s": 12.0,
+    "refraction_glow_frac": 0.03,
+    "refraction_lead_s": 4.0
+  },
+
+  "array": {
+    "_comment": "ISS SAW / ROSA class large flexible wing. CITE-REQUIRED: span, chord, modal frequencies, damping.",
+    "span_m": 34.0,
+    "chord_m": 11.6,
+    "modes": [
+      {"name": "B1", "freq_hz": 0.082, "damping_ratio": 0.0035, "amplitude_m": 0.145, "kind": "bending", "order": 1, "phase_rad": 0.0},
+      {"name": "T1", "freq_hz": 0.310, "damping_ratio": 0.0050, "amplitude_m": 0.048, "kind": "torsion", "order": 1, "phase_rad": 1.1},
+      {"name": "B2", "freq_hz": 0.515, "damping_ratio": 0.0060, "amplitude_m": 0.032, "kind": "bending", "order": 2, "phase_rad": 0.4},
+      {"name": "B3", "freq_hz": 1.440, "damping_ratio": 0.0090, "amplitude_m": 0.009, "kind": "bending", "order": 3, "phase_rad": 2.2}
+    ],
+    "thermal_snap": {
+      "t_snap_s": 8.0,
+      "ambient_fraction": 0.06,
+      "rise_time_s": 0.15
+    }
+  },
+
+  "scene": {
+    "_comment": "Projection of the array into the image plane, seen from a bus- or boom-mounted camera.",
+    "root_x_px": 90,
+    "tip_x_px": 1210,
+    "centre_y_px": 300,
+    "chord_px": 150,
+    "metres_per_pixel": 0.0304,
+    "panel_reflectance": 0.075,
+    "background_reflectance": 0.004,
+    "cell_stripe_contrast": 0.55,
+    "n_cell_stripes": 26,
+    "n_cell_rows": 5,
+    "solar_disk": {
+      "enabled": true,
+      "centre_x_px": 980,
+      "final_y_px": 620,
+      "travel_y_px": 190,
+      "radius_px": 26.0,
+      "halo_sigma_px": 95.0,
+      "peak_radiance_gain": 4.0e4
+    },
+    "earth_limb": {
+      "enabled": true,
+      "horizon_y_px": 688,
+      "softness_px": 34.0,
+      "radiance_gain": 55.0
+    }
+  },
+
+  "glare_guard": {
+    "cell_size_px": 16,
+    "common_mode_index_threshold": 0.55,
+    "median_subtraction": true,
+    "solar_mask_rate_sigma": 6.0,
+    "solar_mask_persistence": 4,
+    "solar_mask_halo_px": 48,
+    "erc_target_evs": 20000000,
+    "bias_profiles": {
+      "_comment": "CITE-REQUIRED / CALIBRATE-PER-UNIT. Bias codes are unit-specific; these are starting points only and must be swept on the actual EVK4 before use.",
+      "eclipse":    {"bias_diff_on": 0,   "bias_diff_off": 0,   "bias_fo": 0,  "bias_hpf": 0,  "bias_refr": 0},
+      "terminator": {"bias_diff_on": 45,  "bias_diff_off": 45,  "bias_fo": 15, "bias_hpf": 40, "bias_refr": -15},
+      "full_sun":   {"bias_diff_on": 20,  "bias_diff_off": 20,  "bias_fo": 10, "bias_hpf": 20, "bias_refr": -5}
+    },
+    "terminator_enter_rate_evs": 8000000,
+    "terminator_exit_rate_evs": 2000000
+  },
+
+  "vibrometer": {
+    "_comment": "Virtual displacement gauges placed along the panel edges. xi is the normalised span coordinate.",
+    "gauge_xi": [0.18, 0.34, 0.50, 0.66, 0.82, 0.96],
+    "gauge_half_width_px": 40,
+    "gauge_half_height_px": 18,
+    "edges": ["top", "bottom"],
+    "highpass_hz": 0.01,
+    "highpass_order": 2,
+    "min_mean_activity_events": 0.5,
+    "max_dropout_fraction": 0.35
+  },
+
+  "modal_analysis": {
+    "_comment": "A 300 s Welch segment gives 3.3 mHz resolution. Damping comes from the log decrement, not the half-power bandwidth: at 0.082 Hz and zeta=0.0035 the -3 dB width is 5.7e-4 Hz, which would need a 29 min segment.",
+    "welch_window_s": 300.0,
+    "welch_overlap": 0.5,
+    "band_hz": [0.02, 5.0],
+    "peak_prominence_db": 6.0,
+    "peak_snr_db": 12.0,
+    "max_modes": 6,
+    "min_peak_separation_hz": 0.02
+  },
+
+  "run": {
+    "_comment": "The modal record must outlast the drift filter warm-up (159 s) and several Welch segments. The fundamental decays with a 555 s time constant, so 1400 s captures the usable free decay.",
+    "duration_s": 1400.0,
+    "slice_dt_us": 20000,
+    "storm_duration_s": 30.0,
+    "storm_slice_dt_us": 5000,
+    "sim_scale": 4,
+    "random_seed": 20260204
+  }
+}

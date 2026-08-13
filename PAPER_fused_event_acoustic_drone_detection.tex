@@ -1,0 +1,339 @@
+%% IEEEtran conference paper
+%% Compile with pdflatex (twice for references/labels).
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{array}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+
+\title{Passive Drone Detection by Bayesian Fusion of\\
+Event-Camera Propeller Sensing and\\
+Microphone-Array Acoustic Localization}
+
+\author{\IEEEauthorblockN{Author Name}
+\IEEEauthorblockA{\textit{Affiliation} \\
+\textit{Organization}\\
+City, Country \\
+author@email}
+}
+
+\maketitle
+
+\begin{abstract}
+Small unmanned aerial vehicles (UAVs) are difficult to detect with
+conventional radar and RGB cameras because of their low radar cross-section,
+small visual footprint, and low acoustic energy against urban background
+noise. This paper presents \textbf{NeuraSense}, a passive dual-modality
+detector that fuses a neuromorphic event camera (Prophesee EVK4-HD, IMX636)
+with a four-microphone acoustic array (ReSpeaker). The event camera exploits
+the microsecond temporal resolution and \textgreater120~dB dynamic range of
+the sensor to recover the per-pixel blade-pass frequency (BPF) of a rotating
+propeller, while the microphone array estimates the same BPF and its
+direction of arrival (DOA) using frequency-weighted GCC-PHAT. A sequential
+Bayesian filter fuses the two modalities and rejects single-modality false
+alarms through a harmonic frequency cross-validation step. On recorded event
+data the visual stage locks a propeller at 99.7~Hz (2\,990~RPM) with a stable
+centroid and zero latency drift over 175~s, and the acoustic stage
+independently confirms a 182--189~Hz blade-pass tone. We report the full
+processing pipeline, the fusion mathematics, latency budget, and an honest
+analysis of the cross-modal spatial-calibration limits.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Event camera, neuromorphic vision, drone detection, propeller blade-pass
+frequency, GCC-PHAT, direction of arrival, Bayesian sensor fusion, acoustic
+localization.
+\end{IEEEkeywords}
+
+\section{Introduction}
+Counter-UAV sensing must contend with targets that are small, slow, and often
+flying below the radar horizon. Passive electro-optical and acoustic
+approaches are attractive because they emit nothing and are inexpensive, but
+each modality alone is fragile: cameras fail in low light or clutter, and
+single-array acoustics is easily masked by ambient noise and suffers from poor
+angular resolution at long range.
+
+A rotating propeller is, however, a strong \emph{periodic} signature in
+\textbf{both} domains simultaneously. Optically, each blade sweep modulates
+the brightness of the pixels it crosses at the blade-pass frequency
+$f_{\mathrm{BPF}} = (\mathrm{RPM}/60)\cdot N_{\text{blades}}$. Acoustically,
+the same blade passing produces a tone at the identical fundamental. This
+shared, physically-linked frequency is the anchor of the present work: if two
+independent sensors report the same BPF from the same direction at the same
+time, the joint probability of a false alarm collapses.
+
+We use an \emph{event camera} rather than a frame camera because propeller
+detection is fundamentally a high-speed temporal task. A frame camera at
+30--60~fps aliases blade-pass frequencies of hundreds of Hz; the EVK4-HD
+timestamps each pixel-level brightness change to $\sim$1~$\mu$s, so periodic
+motion up to the kHz range is recoverable directly from the event stream
+without motion blur and across a \textgreater120~dB dynamic range.
+
+\textbf{Contributions.}
+\begin{enumerate}
+\item A latency-stable per-pixel BPF detector built on the Metavision
+\texttt{FrequencyMapAsyncAlgorithm}, redesigned from a failed grid-FFT baseline
+into a connected-component + temporal-tracking pipeline (Sec.~\ref{sec:visual}).
+\item A frequency-weighted, zero-padded GCC-PHAT DOA estimator tuned for the
+low-frequency propeller band on a compact 64~mm-baseline array
+(Sec.~\ref{sec:acoustic}).
+\item A sequential Bayesian fusion filter with harmonic frequency
+cross-validation and temporal association gating (Sec.~\ref{sec:fusion}).
+\item A measured evaluation and a candid discussion of where the current
+cross-modal spatial calibration is \emph{not yet} reliable
+(Sec.~\ref{sec:results}--\ref{sec:discussion}).
+\end{enumerate}
+
+\section{Related Work}
+Radar-based counter-UAV systems dominate the literature but struggle with
+micro-UAVs of low radar cross-section and require active emission. Acoustic
+UAV detection using microphone arrays and machine learning has been shown to
+work at ranges of tens to low-hundreds of metres in quiet conditions, but
+degrades sharply with wind and traffic noise, and small arrays give coarse
+DOA. RGB-vision detectors (e.g., YOLO-family) are effective when the UAV is
+large in frame but fail at range and in poor illumination.
+
+Neuromorphic (event) cameras have recently been applied to high-speed
+vibration and rotation sensing, exploiting their microsecond latency and
+sparse output~\cite{gallego2022}. Our work differs by (i) targeting the
+\emph{propeller} rather than the airframe, using the blade-pass frequency as
+an invariant, and (ii) \emph{fusing} the event-based BPF estimate with an
+acoustic estimate of the same physical quantity so that each modality
+validates the other.
+
+\section{System Overview}
+NeuraSense comprises two passive sensors and a fusion core.
+
+\begin{table}[t]
+\caption{Hardware and Compute Components}
+\label{tab:hw}
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Component} & \textbf{Device} & \textbf{Key specification} \\
+\midrule
+Vision  & Prophesee EVK4-HD & 1280$\times$720, $\sim$1~$\mu$s, \textgreater120~dB DR \\
+Audio   & ReSpeaker 4-Mic   & 4 MEMS, 32~mm circular, 16~kHz \\
+Compute & Python 3.9 + SDK 4.6.2 & OpenCV, NumPy, PyAudio \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The two pipelines run in separate threads. The visual pipeline processes the
+event stream on the main thread; an \texttt{AcousticProcessor} daemon thread
+continuously buffers audio and publishes its latest result. The fusion core
+reads both, applies a temporal association gate, and performs a sequential
+Bayesian update.
+
+\section{Visual Pipeline: Event-Based Blade-Pass Detection}
+\label{sec:visual}
+
+\subsection{Per-Pixel Frequency Map}
+Events are sliced by the \texttt{EventsIterator} into $\Delta t = 500~\mu$s
+buckets (2\,000~Hz effective sampling, Nyquist 1\,000~Hz). The Metavision
+\texttt{FrequencyMapAsyncAlgorithm} maintains, for every pixel, the frequency
+of its periodic brightness modulation, producing a 1280$\times$720 frequency
+map updated at 10--20~Hz.
+
+\subsection{From Grid-FFT to Connected Components}
+The initial baseline divided the sensor into a 16$\times$16 grid and ran an
+FFT on each cell's event-rate time series. This failed beyond a few
+centimetres: a 160$\times$90~px cell mixes a handful of propeller pixels with
+hundreds of noise pixels, diluting the periodic signal below the noise floor,
+and lowering thresholds merely converted the noise floor into 25--43 false
+``regions'' per frame. The key lesson was that \textbf{parameter tuning cannot
+repair a wrong architecture}.
+
+The redesigned pipeline is: (1)~\emph{threshold} the frequency map into a
+binary mask of pixels whose frequency lies in $[f_{\min}, f_{\max}]$;
+(2)~\emph{downscale} 4$\times$ (1280$\times$720~$\rightarrow$~320$\times$180)
+and \emph{dilate} with an elliptical kernel; (3)~\emph{connected-component
+labelling} (8-connectivity) to obtain spatial clusters; (4)~\emph{filter}
+clusters by minimum pixel count (default 3) and frequency coefficient of
+variation $\mathrm{CV}=\sigma_f/\mu_f \le 0.3$.
+
+\subsection{Temporal Tracking and Confidence}
+Candidate detections are matched to existing tracks by spatial proximity
+($\le$100~px) and frequency similarity ($\le$30\,\% relative). Track state is
+smoothed with an exponential moving average, $\alpha=0.3$. A track's
+confidence follows a Bayesian persistence model
+\begin{equation}
+P(\text{propeller}) = 1 - (1-p)^{n}, \qquad p\in[0.65,\,0.85],
+\end{equation}
+where $n$ is the number of consecutive hits. A track is \emph{confirmed} when
+$P\ge 0.95$ and $n\ge 2$; tracks unseen for \texttt{max\_age}~$=8$ frames are
+pruned, removing transient 3-pixel noise clusters within 1--2~s.
+
+\subsection{Latency Elimination}
+Running clustering synchronously on the full-resolution map at 25~Hz cost
+$\sim$15~ms per callback ($\sim$375~ms per second of budget), causing
+monotonically increasing display lag. Four fixes removed the drift:
+4$\times$ downscale before morphology/CC ($\sim$10$\times$ speedup); update
+rate 25~$\rightarrow$~10~Hz; in-place drawing (no \texttt{frame.copy()},
+removing $\sim$67~MB/s allocation); and early exit on empty masks. Net
+callback cost fell from $\sim$15~ms~$\times$~25~s$^{-1}$ to
+$\sim$2~ms~$\times$~10~s$^{-1}$, giving \textbf{zero latency drift} over 175~s.
+
+\section{Acoustic Pipeline: BPF and Direction of Arrival}
+\label{sec:acoustic}
+
+\subsection{Blade-Pass Frequency}
+Each of the four channels is accumulated into a 0.2~s ring buffer
+(3\,200~samples at 16~kHz). A Hann-windowed FFT yields per-channel spectra;
+the dominant peak in $[f_{\min}, f_{\max}]$ is the acoustic BPF, with SNR
+measured as peak magnitude over the spectral median.
+
+\subsection{Frequency-Weighted GCC-PHAT}
+DOA is estimated from the two orthogonal 64~mm mic pairs (0--2 and 1--3). For
+a pair of signals with spectra $S_1, S_2$, the generalized cross-correlation
+with phase transform is weighted toward the target band:
+\begin{equation}
+R(\tau) = \mathcal{F}^{-1}\!\left\{
+\frac{S_1 S_2^{*}}{|S_1 S_2^{*}|}\,\bigl(1 + 4\,w(f)\bigr) \right\},
+\end{equation}
+\begin{equation}
+w(f)=\frac{|S_1|+|S_2|}{\max(|S_1|+|S_2|)}\Big|_{f\in[f_{\min},f_{\max}]}.
+\end{equation}
+The inverse transform uses 4$\times$ zero-padding for sub-sample TDOA
+resolution, and a main-peak-to-second-peak confidence metric rejects
+unreliable windows. The azimuth follows from
+$\theta = \arcsin(c\,\hat\tau / d)$ with $c=343$~m/s and $d=0.064$~m.
+Estimates from the two pairs are averaged when both are confident; the planar
+array cannot resolve elevation.
+
+\section{Bayesian Sensor Fusion}
+\label{sec:fusion}
+
+\subsection{Sequential Update}
+Let $P(D)$ be the current belief that a drone is present. Given visual
+evidence $V$ and acoustic evidence $A$, each modality applies a Bayes update
+\begin{equation}
+P(D\mid E) = \frac{P(E\mid D)\,P(D)}
+{P(E\mid D)\,P(D) + P(E\mid \bar D)\,P(\bar D)} .
+\end{equation}
+Likelihoods are sigmoids of SNR, gated by the frequency band:
+$P(V\mid D) = \sigma(\mathrm{SNR}_V - 5)$ and
+$P(A\mid D) = \sigma(\mathrm{SNR}_A - 4)$. Evidence outside
+$[f_{\min}, f_{\max}]$ receives deliberately weak likelihoods so out-of-band
+noise cannot drive detection.
+
+\subsection{Harmonic Cross-Validation}
+When both modalities are present, a cross-validation term rewards agreement
+while tolerating that one sensor may see a harmonic:
+\begin{equation}
+\exists\, n_v,n_a\in\{1..4\}:\;
+\frac{\bigl|f_V/n_v - f_A/n_a\bigr|}{f_A/n_a} < 0.05
+\;\Rightarrow\; \text{bonus} = \frac{0.99}{n_v n_a}.
+\end{equation}
+A match injects a strong likelihood ratio ($P_f(D)=0.99\cdot\text{conf}$ vs.
+$P_f(\bar D)=0.001$), sharply increasing $P(D)$.
+
+\subsection{Decay and Temporal Association}
+With no new evidence the belief relaxes toward the prior,
+$P(D)\leftarrow 0.995\,P(D)+0.005\,P_0$ with $P_0=10^{-3}$. Cross-modal
+evidence is fused only if visual and acoustic timestamps fall within an
+association window (default $0.20$~s); otherwise a visual-only update is
+applied. A drone is declared when $P(D) > 0.8$.
+
+\section{Results}
+\label{sec:results}
+
+\subsection{Visual Detection}
+On recorded event data the redesigned pipeline produces a single confirmed
+propeller, stable at \textbf{99.7~Hz ($\approx$2\,990~RPM)}, with a locked
+centroid at pixel (430,~22), $\sim$100 vibrating pixels, and 270+ consecutive
+hits over the recording. Transient false positives are pruned within 1--2~s.
+
+\subsection{Acoustic Verification}
+A separate acoustic verification session reported a dominant blade-pass tone.
+A representative approved detection had a \textbf{top frequency of 182.1~Hz}
+with a 62.2~dB peak and strong energy across 152--200~Hz, consistent with a
+$\sim$180--190~Hz fundamental. Windows lacking a clear in-band peak were
+correctly rejected.
+
+\begin{table}[t]
+\caption{First-Detect Latency Budget}
+\label{tab:latency}
+\centering
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Stage} & \textbf{Latency} \\
+\midrule
+Visual   & $\sim$40--60~ms ($\approx$7 periods @ 189~Hz + overhead) \\
+Acoustic & $\sim$50--120~ms (FFT window fill + USB buffer) \\
+Fused    & $\sim$100--200~ms (both modalities agree) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Cross-Modal Spatial Calibration (Negative Result)}
+We attempted an online linear calibration mapping visual azimuth to acoustic
+azimuth. Over $n=101$ samples in 7 bins the fit was
+$\theta_{ac} = -0.011\,\theta_{vis} + 0.37^{\circ}$ with RMSE $0.70^{\circ}$
+but $R^{2}=0.14$, and the collector flagged the model as \textbf{not solid}.
+The acoustic azimuth spanned only $\approx$2.5$^{\circ}$ while the visual
+azimuth spanned $\approx$56$^{\circ}$: the compact array did not resolve the
+angular motion the camera saw. Thus the current geometry supports
+frequency-level and temporal fusion, but \emph{not yet} reliable spatial
+(azimuth) fusion.
+
+\section{Discussion and Limitations}
+\label{sec:discussion}
+\begin{itemize}
+\item \textbf{No hardware clock synchronization.} Visual events carry
+$\mu$s timestamps while audio is wall-clock buffered; fusion relies on a soft
+0.2~s association gate rather than a shared clock.
+\item \textbf{Planar 32~mm array.} Elevation is unobservable, and the 64~mm
+baseline gives coarse azimuth---adequate for gating, insufficient for
+triangulation.
+\item \textbf{Harmonic ambiguity.} A 2-blade BPF can alias a 4-blade prop at
+half frequency; cross-validation tolerates harmonics but cannot always
+disambiguate blade count.
+\item \textbf{Limited ground truth.} Evaluation used single recordings; no
+labelled multi-drone dataset or independent error rates yet.
+\item \textbf{Range envelope.} Visual range is $\sim$15~m for Mavic-class
+targets; acoustic range of 100--150~m in quiet conditions is unvalidated.
+\end{itemize}
+
+\section{Conclusion and Future Work}
+We presented a passive, dual-modality drone detector that anchors fusion on
+the physically-shared propeller blade-pass frequency. The event-based visual
+stage achieves stable, drift-free BPF estimation, the acoustic stage
+independently confirms the same tone, and a sequential Bayesian filter with
+harmonic cross-validation combines them. The honest negative result on azimuth
+calibration defines the next steps: (i)~a hardware or software clock sync
+between sensors, (ii)~a larger-baseline or multi-node array for usable DOA,
+(iii)~a labelled multi-drone dataset with reported ROC performance, and
+(iv)~triangulation across 3--4 nodes for 360$^{\circ}$ coverage and 3D
+localization.
+
+\section*{Acknowledgment}
+The authors thank [collaborators / funding].
+
+\begin{thebibliography}{00}
+\bibitem{prophesee} Prophesee, ``Metavision SDK---Frequency and vibration
+estimation algorithms,'' Technical documentation, v4.6.
+\bibitem{gallego2022} G. Gallego \emph{et al.}, ``Event-based vision: A
+survey,'' \emph{IEEE Trans. Pattern Anal. Mach. Intell.}, 2022.
+\bibitem{knapp1976} C. Knapp and G. Carter, ``The generalized correlation
+method for estimation of time delay,'' \emph{IEEE Trans. Acoust., Speech,
+Signal Process.}, vol. 24, no. 4, pp. 320--327, 1976.
+\bibitem{respeaker} Seeed Studio, ``ReSpeaker 4-Mic Array---hardware and
+DOA,'' Product documentation.
+\bibitem{thrun2005} S. Thrun, W. Burgard, and D. Fox, \emph{Probabilistic
+Robotics}. Cambridge, MA: MIT Press, 2005.
+\bibitem{acoustic} E. E. Case \emph{et al.}, ``Low-cost acoustic array for
+small UAV detection and tracking,'' review of array-based UAV acoustics.
+\end{thebibliography}
+
+\end{document}

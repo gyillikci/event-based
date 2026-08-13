@@ -119,6 +119,31 @@ def parse_args():
         help="Max relative frequency difference to match detection to track.",
     )
 
+    # SDK-native clustering (alternative to the custom connected-component
+    # clustering on the frequency map). See sdk_star_stages.FrequencyClusterDetector.
+    parser.add_argument(
+        "--use-sdk-clustering", dest="use_sdk_clustering", action="store_true",
+        help="Use the Metavision SDK FrequencyAlgorithm + FrequencyClusteringAlgorithm "
+             "(via sdk_star_stages.FrequencyClusterDetector) to produce candidates "
+             "directly from raw events, instead of the custom connected-component "
+             "clustering on the per-pixel frequency map. The frequency heatmap is "
+             "still shown for reference.",
+    )
+    parser.add_argument(
+        "--sdk-max-freq-diff", dest="sdk_max_freq_diff", type=float, default=10.0,
+        help="[SDK clustering] Max frequency difference (Hz) between events to join "
+             "the same cluster.",
+    )
+    parser.add_argument(
+        "--sdk-max-time-diff", dest="sdk_max_time_diff", type=int, default=100000,
+        help="[SDK clustering] Max time difference (us) between events to join the "
+             "same cluster.",
+    )
+    parser.add_argument(
+        "--sdk-filter-alpha", dest="sdk_filter_alpha", type=float, default=0.1,
+        help="[SDK clustering] Exponential smoothing factor for cluster centroid/frequency.",
+    )
+
     # Timing
     parser.add_argument(
         "--delta-t", dest="delta_t", type=int, default=500,
@@ -714,6 +739,28 @@ def main():
         confidence_threshold=args.confidence_threshold,
     )
 
+    # --- Optional: SDK-native frequency clustering ---
+    # When enabled, candidate propeller regions come from the Metavision SDK
+    # FrequencyClusteringAlgorithm (operating directly on raw events) instead of
+    # the custom connected-component clustering on the per-pixel frequency map.
+    # Clusters are accumulated (keyed by cluster id) in the main loop and consumed
+    # by the tracker each frequency-map callback.
+    sdk_detector = None
+    sdk_cluster_state = {}          # cluster id -> latest detection dict
+    if args.use_sdk_clustering:
+        from sdk_star_stages import FrequencyClusterDetector
+        sdk_detector = FrequencyClusterDetector(
+            width, height,
+            min_freq=args.min_freq,
+            max_freq=args.max_freq,
+            filter_length=args.filter_length,
+            diff_thresh_us=args.max_period_diff,
+            min_cluster_size=args.min_cluster_pixels,
+            max_frequency_diff=args.sdk_max_freq_diff,
+            max_time_diff_us=args.sdk_max_time_diff,
+            filter_alpha=args.sdk_filter_alpha,
+        )
+
     # --- Windows ---
     ev_window = MTWindow(title="Propeller Detector - Events + Detections",
                          width=width, height=height,
@@ -738,6 +785,7 @@ def main():
     confirmed_propellers = []      # latest confirmed tracks
     last_print_ts = [0]            # timestamp of last console printout
     prev_confirmed_ids = [set()]   # for detecting changes
+    sdk_cluster_ms = [0.0]         # EMA of SDK clustering cost (SDK mode only)
 
     def on_cd_frame_cb(ts, cd_frame):
         """Called ~25 fps: overlay detection bounding boxes on the event frame."""
@@ -752,8 +800,15 @@ def main():
         """Called at update_freq Hz: analyze freq map, track, visualize."""
         nonlocal confirmed_propellers
 
-        # --- Spatial clustering on the frequency map ---
-        candidates = analyzer.analyze(freq_map)
+        # --- Candidate propeller regions ---
+        if sdk_detector is not None:
+            # SDK clustering already ran on the raw events in the main loop;
+            # consume the clusters accumulated since the last update.
+            candidates = list(sdk_cluster_state.values())
+            sdk_cluster_state.clear()
+        else:
+            # Custom connected-component clustering on the frequency map.
+            candidates = analyzer.analyze(freq_map)
 
         # --- Temporal tracking ---
         confirmed_propellers = tracker.update(candidates)
@@ -805,7 +860,10 @@ def main():
             last_print_ts[0] = ts_sec
 
             if confirmed_propellers:
-                timing = f"analyze={analyzer.analysis_time_ms:.1f}ms"
+                if sdk_detector is not None:
+                    timing = f"sdk_cluster={sdk_cluster_ms[0]:.1f}ms"
+                else:
+                    timing = f"analyze={analyzer.analysis_time_ms:.1f}ms"
                 print(f"[{ts_sec:7.2f}s] === {n_confirmed} CONFIRMED PROPELLER(S) ===  "
                       f"({n_candidates} cand, {n_tracks} trk, {timing})")
                 for track in confirmed_propellers:
@@ -828,6 +886,8 @@ def main():
     print(f"  Sensor          : {width}x{height}")
     print(f"  Frequency range : {args.min_freq} - {args.max_freq} Hz")
     print(f"  Blades assumed  : {args.num_blades}")
+    print(f"  Clustering      : "
+          f"{'SDK FrequencyClusteringAlgorithm' if args.use_sdk_clustering else 'custom connected-component'}")
     print(f"  Min cluster px  : {args.min_cluster_pixels}")
     print(f"  Dilate radius   : {args.dilate_radius}")
     print(f"  Max freq CV     : {args.max_freq_cv}")
@@ -844,6 +904,35 @@ def main():
     for evs in mv_iterator:
         EventLoop.poll_and_dispatch()
         event_frame_gen.process_events(evs)
+
+        # SDK-native clustering runs directly on the raw events (when enabled).
+        if sdk_detector is not None:
+            t0 = time.perf_counter()
+            clusters = sdk_detector.process(evs)
+            for c in clusters:
+                freq_hz = float(c["frequency"])
+                if freq_hz <= 0:
+                    continue
+                n_px = int(c["n_pixels"])
+                cx, cy = float(c["x"]), float(c["y"])
+                r = max(8, int(n_px ** 0.5))
+                bx = max(0, int(cx - r))
+                by = max(0, int(cy - r))
+                bw = min(width - bx, 2 * r)
+                bh = min(height - by, 2 * r)
+                sdk_cluster_state[int(c["id"])] = {
+                    "x": cx,
+                    "y": cy,
+                    "freq_hz": freq_hz,
+                    "rpm": (freq_hz / args.num_blades) * 60.0,
+                    "pixels": n_px,
+                    "bbox": (bx, by, bw, bh),
+                    "freq_cv": 0.0,   # SDK clustering already enforces freq coherence
+                }
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            sdk_cluster_ms[0] = (elapsed_ms if sdk_cluster_ms[0] == 0.0
+                                 else 0.2 * elapsed_ms + 0.8 * sdk_cluster_ms[0])
+
         freq_algo.process_events(evs)
 
         if ev_window.should_close() or freq_window.should_close():
