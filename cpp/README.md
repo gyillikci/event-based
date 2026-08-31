@@ -8,6 +8,35 @@ Python scripts in this workspace cannot call them.
 |------|----------------------------|-------------------|
 | `active_marker_detector` | `ModulatedLightDetectorAlgorithm`, `ActiveMarkerTrackerAlgorithm` | none (no wrapper) |
 | `propeller_detector` | `ProximityFilterAlgorithm` (focus) + `FrequencyAlgorithm` + `FrequencyClusteringAlgorithm` | `detect_propeller.py --use-sdk-clustering` (no proximity focus) |
+| `drone_propeller_detector` | `FrequencyMapAsyncAlgorithm` + `ProximityFilterAlgorithm` (focus) | `detect_propeller.py` (default v3 path) |
+
+## `drone_propeller_detector` vs `propeller_detector`
+
+The two propeller tools implement the two clustering strategies of
+`detect_propeller.py`:
+
+- `propeller_detector` — the SDK path (`FrequencyAlgorithm` +
+  `FrequencyClusteringAlgorithm`), i.e. `--use-sdk-clustering`. Console only.
+- `drone_propeller_detector` — the **default v3 production path**: per-pixel
+  `FrequencyMapAsyncAlgorithm`, then a custom connected-component analyzer
+  (threshold → 4× downscale → dilate → components → ROI-only frequency stats →
+  fragment consolidation) and a Bayesian tracker
+  (`P = 1 − (1 − p)^hits`, velocity-predicted greedy matching). Shows the event
+  window with detection overlays plus the frequency heat map.
+
+CLI names and defaults match `detect_propeller.py` so results can be compared
+directly, with three deliberate differences:
+
+- `--delta-t` is dropped — event batching is driver-controlled in C++, there is no
+  `EventsIterator` slice size. The Python Nyquist check tied to it is dropped too:
+  `FrequencyMapAsyncAlgorithm` measures per-pixel periods, so the batch size does
+  not limit the detectable frequency.
+- `--replay-factor` becomes the boolean `--realtime-playback-speed`; the SDK has no
+  fractional replay factor.
+- `--use-sdk-clustering` is not ported — that mode is `propeller_detector`.
+
+Extras not in the Python script: `--session-log` (JSONL trace), `--benchmark`
+(headless timing summary) and `--self-test` (synthetic frequency map, no camera).
 
 ## Which SDK binaries had no Python wrapper?
 
@@ -63,9 +92,23 @@ cpp\build\active_marker_detector\Release\active_marker_detector.exe --led-ids 1,
 # propeller — from a recording, focus on a region
 cpp\build\propeller_detector\Release\propeller_detector.exe `
     -i recording.raw --num-blades 3 --focus-x 320 --focus-y 240 --focus-radius 120
+
+# drone propeller (v3 pipeline) — live camera, two windows, q/ESC to quit
+cpp\build\drone_propeller_detector\Release\drone_propeller_detector.exe --num-blades 3
+
+# drone propeller — offline benchmark against the Python detector, with a JSONL trace
+cpp\build\drone_propeller_detector\Release\drone_propeller_detector.exe `
+    -i recording.raw --benchmark --session-log results\cpp_propeller.jsonl
+
+# drone propeller — self test, no camera needed
+cpp\build\drone_propeller_detector\Release\drone_propeller_detector.exe --self-test
 ```
 
-Run either tool with `--help` for the full option list.
+Run any tool with `--help` for the full option list.
+
+Always quit `drone_propeller_detector` with `q` or `ESC`. Killing the process
+mid-stream can leave an EVK4 in `LIBUSB_ERROR_TIMEOUT`, which only a physical
+USB replug clears.
 
 ## Important: active-marker firmware
 
