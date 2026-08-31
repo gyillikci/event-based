@@ -170,9 +170,10 @@ def parse_args(markers_default, band_default, tol_default):
 
     # Timing
     parser.add_argument(
-        "--delta-t", dest="delta_t", type=int, default=100,
-        help="Event slice duration (us). Default 100 us -> 5000 Hz Nyquist, "
-             "ample headroom for a 2000 Hz marker.",
+        "--delta-t", dest="delta_t", type=int, default=1000,
+        help="Event batch size (us) handed to the SDK per loop iteration. Larger "
+             "= fewer Python iterations/sec = lower live latency. Detection is "
+             "period-based, so this does NOT limit the detectable frequency.",
     )
     parser.add_argument(
         "--update-freq", dest="update_freq", type=float, default=30,
@@ -187,14 +188,13 @@ def parse_args(markers_default, band_default, tol_default):
 
     args = parser.parse_args()
 
-    # Validate Nyquist
-    nyquist = 1e6 / args.delta_t / 2
-    if args.max_freq > nyquist:
-        parser.error(
-            f"--max-freq ({args.max_freq} Hz) exceeds Nyquist limit ({nyquist:.0f} Hz) "
-            f"for --delta-t {args.delta_t} us. Decrease --delta-t to at least "
-            f"{int(1e6 / (2 * args.max_freq))} us."
-        )
+    # delta_t only controls how often event batches are handed to the SDK. The
+    # frequency algorithms measure per-pixel blink periods from event timestamps
+    # (1 us resolution), so the detectable frequency is NOT limited by
+    # 1/(2*delta_t): a larger delta_t just means fewer Python iterations per
+    # second, which lowers live-camera latency.
+    if args.max_freq <= args.min_freq:
+        parser.error(f"--max-freq ({args.max_freq}) must exceed --min-freq ({args.min_freq}).")
     return args
 
 
@@ -402,7 +402,6 @@ def main():
     freq_algo.set_output_callback(on_freq_map)
 
     # Header
-    nyquist = 1e6 / delta_t / 2
     cycle_ms = 1000.0 / args.update_freq
     print("=" * 78)
     print("  Active LED Marker Detector  (reuses propeller frequency pipeline)")
@@ -416,7 +415,7 @@ def main():
           f"dist={args.track_distance}, freq_tol={args.freq_tolerance}")
     print(f"  Confidence      : Bayesian threshold={args.confidence_threshold:.0%}")
     print(f"  Update rate     : {args.update_freq} Hz  (cycle={cycle_ms:.0f} ms)")
-    print(f"  delta_t         : {delta_t} us  (Nyquist={nyquist:.0f} Hz)")
+    print(f"  delta_t         : {delta_t} us  (event batch size; not a freq limit)")
     print("=" * 78)
     print()
 

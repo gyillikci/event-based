@@ -22,14 +22,19 @@
 #include <iostream>
 #include <iterator>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include <opencv2/opencv.hpp>
+
 #include <metavision/sdk/base/events/event_cd.h>
 #include <metavision/sdk/base/utils/timestamp.h>
+#include <metavision/sdk/core/algorithms/periodic_frame_generation_algorithm.h>
 #include <metavision/sdk/cv/events/event_source_id.h>
 #include <metavision/sdk/cv/events/event_active_track.h>
 #include <metavision/sdk/cv/algorithms/modulated_light_detector_algorithm.h>
@@ -177,6 +182,10 @@ void print_usage() {
         "      --tracker-distance-percentage <f>   radius update pct (default 0.3)\n"
         "      --tracker-alpha-pos <f>             position smoothing (default 0.05)\n"
         "      --tracker-update-radius <0|1>       auto radius update (default 1)\n\n"
+        "Display:\n"
+        "      --no-display                    disable the live OpenCV window (headless)\n"
+        "      --display-fps <f>               window refresh rate (default 30)\n"
+        "      --accumulation-time-us <us>     event accumulation per frame (default 10000)\n\n"
         "Output:\n"
         "      --report-period <s>         console report interval seconds (default 1.0)\n"
         "  -h, --help                      show this help\n";
@@ -270,6 +279,30 @@ int main(int argc, char **argv) {
     const Metavision::timestamp report_period_us =
         static_cast<Metavision::timestamp>(report_period_s * 1e6);
 
+    // Optional live visualization: render the event stream and overlay tracked markers.
+    const bool display = !args.getb("no-display", false);
+    std::mutex frame_mtx;
+    cv::Mat display_frame;
+    bool has_new_frame = false;
+    std::unique_ptr<Metavision::PeriodicFrameGenerationAlgorithm> frame_gen;
+    if (display) {
+        frame_gen.reset(new Metavision::PeriodicFrameGenerationAlgorithm(
+            width, height, static_cast<std::uint32_t>(args.geti("accumulation-time-us", 10000)),
+            args.getf("display-fps", 30.f)));
+        frame_gen->set_output_callback([&](Metavision::timestamp, cv::Mat &frame) {
+            for (const auto &kv : latest) {
+                const auto &tr = kv.second;
+                const cv::Point c(static_cast<int>(tr.x), static_cast<int>(tr.y));
+                cv::circle(frame, c, std::max(3, static_cast<int>(tr.radius)), cv::Scalar(0, 255, 0), 2);
+                cv::putText(frame, "id" + std::to_string(kv.first), c + cv::Point(6, -6),
+                            cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0), 1);
+            }
+            std::lock_guard<std::mutex> lk(frame_mtx);
+            frame.copyTo(display_frame);
+            has_new_frame = true;
+        });
+    }
+
     camera.cd().add_callback([&](const Metavision::EventCD *begin, const Metavision::EventCD *end) {
         src_ids.clear();
         detector.process_events(begin, end, std::back_inserter(src_ids));
@@ -282,6 +315,10 @@ int main(int argc, char **argv) {
             } else {
                 latest[tr.id] = tr;
             }
+        }
+
+        if (frame_gen) {
+            frame_gen->process_events(begin, end);
         }
 
         if (begin != end) {
@@ -303,8 +340,34 @@ int main(int argc, char **argv) {
 
     try {
         camera.start();
-        while (camera.is_running()) {
-            std::this_thread::yield();
+        if (display) {
+            const std::string win = "Active Marker Detector";
+            cv::namedWindow(win, cv::WINDOW_NORMAL);
+            cv::resizeWindow(win, width, height);
+            cv::Mat shown;
+            while (camera.is_running()) {
+                bool got = false;
+                {
+                    std::lock_guard<std::mutex> lk(frame_mtx);
+                    if (has_new_frame) {
+                        display_frame.copyTo(shown);
+                        has_new_frame = false;
+                        got           = true;
+                    }
+                }
+                if (got && !shown.empty()) {
+                    cv::imshow(win, shown);
+                }
+                const int key = cv::waitKey(1);
+                if (key == 27 || key == 'q' || key == 'Q') {
+                    break;
+                }
+            }
+            cv::destroyAllWindows();
+        } else {
+            while (camera.is_running()) {
+                std::this_thread::yield();
+            }
         }
         camera.stop();
     } catch (const std::exception &e) {
