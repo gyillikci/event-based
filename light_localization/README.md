@@ -142,7 +142,12 @@ All dependencies are already in the project's virtual environment:
 
 ## Literature
 
-See [LITERATURE_REVIEW.md](LITERATURE_REVIEW.md) for a comprehensive survey of 15 papers.
+Two complementary reviews:
+- [LITERATURE_REVIEW.md](LITERATURE_REVIEW.md) — localization systems that use light flicker.
+- [LAMP_FREQUENCY_CHARACTERIZATION_REVIEW.md](LAMP_FREQUENCY_CHARACTERIZATION_REVIEW.md) — what
+  physically generates a luminaire's flicker frequencies, which components are discriminative
+  between fixtures, and the state of the art in using a DVS as a frequency analyser.
+
 Key references:
 - **LiTell** (Zhang & Zhang, MobiCom 2016) — 215 citations — proved fluorescent lights have unique frequencies
 - **Chen et al.** (IEEE Sensors 2020) — 61 citations — first event-camera VLP system

@@ -1,0 +1,77 @@
+{
+    "_comment": "3D geometry of the active LED marker array, plus the camera intrinsics needed to turn 2D LED detections into a 6-DoF pose. Used by track_markers_3d.py. Frequencies here must match active_markers.json (the frequency table shared with the Arduino firmware); this file adds WHERE each LED sits on the rig. Pose accuracy is limited directly by how well these numbers match the physical array.",
+
+    "units": "mm",
+
+    "camera": {
+        "_comment": "5 mm CCTV lens on the EVK4 (IMX636, 1280x720, 4.86 um pitch). f = 5.0/0.00486 = 1028.8 px, giving 63.8 x 38.6 deg (71.0 deg diagonal). The 1/1.7in image circle covers the 7.14 mm sensor diagonal with room to spare. WARNING: this derived matrix assumes a perfect pinhole with the principal point at the image centre and ZERO distortion. A 5 mm CCTV lens has real barrel distortion - several pixels near the frame edge - and every one of those pixels turns straight into pose error. Run metavision_mono_calibration and paste camera_matrix and dist_coeffs here before trusting any number this pipeline prints.",
+        "width": 1280,
+        "height": 720,
+        "pixel_pitch_um": 4.86,
+        "lens": "5 mm, 12 MP, CS/CCTV, 1/1.7 inch format",
+        "camera_matrix": null,
+        "dist_coeffs": null,
+        "lens_focal_length_mm": 5.0
+    },
+
+    "array": {
+        "_comment": "Coordinates below are in the ARRAY frame: origin at the PCB centre, +X towards the USB connector end, +Y down, +Z away from the camera. The two on-board LED positions come from Arduino's own Eagle board file (ABX00030-cad-files.zip, NANO33BLE_V4.0.brd), converted from its bottom-left origin to this centred frame; the board outline there is 43.18 x 17.78 mm.",
+        "name": "Arduino Nano 33 BLE on-board LEDs - INCOMPLETE, needs 2 more",
+
+        "leds": [
+            {
+                "id": 1,
+                "name": "BUILTIN",
+                "_source": "Eagle DL1 'YELLOW' at (1.90, 3.10), net SCK = D13 user LED",
+                "freq_hz": 800,
+                "xyz_mm": [-19.69, 5.79, 0.0],
+                "measured": true,
+                "color_bgr": [0, 165, 255]
+            },
+            {
+                "id": 3,
+                "name": "GREEN",
+                "_source": "Eagle DL3 RGB package SMLP34RGB2W at (26.65, 12.50); LEDR/LEDG/LEDB are three dies inside THIS ONE package, so all three share this coordinate",
+                "freq_hz": 1500,
+                "xyz_mm": [5.06, -3.61, 0.0],
+                "measured": true,
+                "color_bgr": [0, 255, 0]
+            }
+        ]
+    },
+
+    "_on_board_led_survey": {
+        "_comment": "Every LED on the Nano 33 BLE, from the manufacturer's board file, so it is clear what is and is not available as a marker.",
+        "source": "https://docs.arduino.cc/static/722e62484d39226aa5502d1beff58779/ABX00030-cad-files.zip",
+        "board_outline_mm": [43.18, 17.78],
+        "leds": [
+            "DL1 YELLOW  @ (1.90, 3.10)   -> R3 -> net SCK = D13. The user LED. USABLE as a marker.",
+            "DL2 GREEN   @ (1.90, 14.70)  -> R2 -> power rail. Always on, never blinks, so it emits no events and CANNOT be a marker.",
+            "DL3 RGB     @ (26.65, 12.50) -> R7/R11/R12 -> LEDR/LEDG/LEDB. One package, three dies, ONE position. Usable, but contributes only ONE marker point no matter how many channels are driven."
+        ],
+        "conclusion": "The PCB can supply at most TWO distinct marker positions, 26.47 mm apart. Two points cannot determine a 6-DoF pose. At least two more physically separated LEDs must be added on free pins before this pipeline can solve anything."
+    },
+
+    "_how_to_measure_added_leds": [
+        "1. Keep the origin at the PCB centre and the axes above, so the two on-board LEDs stay valid.",
+        "2. Measure each added LED's emitting centre relative to that origin, not its pad or package edge.",
+        "3. Leave Z at 0.0 for anything mounted flat on the board plane.",
+        "4. Raising ONE LED out of the plane by 15-25 mm removes the planar mirror ambiguity entirely; it is the cheapest accuracy win available.",
+        "5. Set measured=true per LED once its numbers are real."
+    ],
+
+    "_sizing": {
+        "_comment": "Median pose error from a 200-trial synthetic sweep with this lens, 0.5 px centroid noise, 4 LEDs at the corners of a square array (see the sizing study). Accuracy scales with the array's apparent size in pixels, so the array span and the working range trade off directly.",
+        "40mm_array": "0.5 m: 2.3 mm / 2.3 deg | 1 m: 8.9 mm / 7.9 deg | 2 m: 35 mm / 17 deg",
+        "80mm_array": "0.5 m: 1.1 mm / 1.1 deg | 1 m: 4.2 mm / 2.3 deg | 2 m: 17 mm / 7.9 deg",
+        "150mm_array": "0.5 m: 0.6 mm / 0.5 deg | 1 m: 2.2 mm / 1.2 deg | 2 m: 9.2 mm / 2.5 deg",
+        "300mm_array": "0.5 m: 0.3 mm / 0.2 deg | 1 m: 1.1 mm / 0.5 deg | 2 m: 4.3 mm / 1.2 deg"
+    },
+
+    "_geometry_requirements": [
+        "6-DoF pose needs at least 4 LEDs that are not collinear; 4 is the practical minimum and more is better.",
+        "3 LEDs is solvable (P3P) but returns up to 4 candidate poses with no way to choose between them from one frame.",
+        "2 LEDs cannot give a 6-DoF pose at all: rotation about the line joining them is unobservable.",
+        "Spread the LEDs as widely as the rig allows - a board-sized 43 mm array is only usable to about half a metre with this lens."
+    ]
+}
